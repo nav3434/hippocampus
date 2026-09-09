@@ -512,3 +512,63 @@ describe('get_observation over the real MCP wire path', () => {
     assert.equal(res.isError, true, 'the required param must be enforced, not defaulted');
   });
 });
+
+describe('the preview notice never names a fetch the caller cannot perform', () => {
+  test('wherever remember points at get_observation, every reported match carries an id', async () => {
+    // remember's PREVIEW_NOTICE used to say the full text was "retrievable with
+    // recall", which needs no id; it now names get_observation, which needs one.
+    // D20 withholds observation_id on append-only entities, so that edit is only
+    // safe if the notice cannot fire there. It cannot — the notice rides the
+    // dedup-skip and replace paths, both gated on `dedupEligible = !appendOnly
+    // && sameDay` — but that is a reachability argument, and this repo's rule is
+    // that a reachability argument gets tested rather than reasoned.
+    const entity = 'project:notice-invariant';
+    const skeleton = 'Deploy runbook for the box. Push, pull, rebuild, verify the health endpoint. ';
+
+    // Backdated: blocked by the same-UTC-day guard, so it is REPORTED, not deduped.
+    const older = await remember({ entity, content: `${skeleton}Variant A, about Caddy on the host.` });
+    backdate(older.observationId, '2026-08-01');
+    // Same day and near-identical: takes the dedup branch, which attaches the notice.
+    await remember({ entity, content: `${skeleton}Variant B, about the session sweep.` });
+    const deduped = await remember({ entity, content: `${skeleton}Variant B, about the session sweep.` });
+
+    // CONTROL: the notice must actually fire, or the assertion below is vacuous.
+    assert.match(
+      deduped.message,
+      /get_observation/,
+      'CONTROL: this fixture must reach a path that names get_observation'
+    );
+    const matches = deduped.near_matches ?? [];
+    assert.ok(matches.length > 0, 'CONTROL: the notice only means something with matches attached');
+
+    for (const match of matches) {
+      assert.equal(
+        typeof (match as { observation_id?: string }).observation_id,
+        'string',
+        'the notice names a fetch by id — every match it describes must carry one'
+      );
+      const fetched = getObservation({ observation_id: (match as { observation_id: string }).observation_id });
+      assert.equal(fetched.success, true, 'and that id must actually resolve');
+    }
+  });
+
+  test('an append-only overlap is never told to fetch by id', async () => {
+    // The other half: append-only matches carry no id, so their message must not
+    // prescribe one. D20 branches the message for exactly this reason.
+    const entity = 'ops:daily-log:notice-invariant';
+    const skeleton = '2026-09-09. Log skeleton shared across dated entries, long enough to clear the threshold. ';
+    const first = await remember({ entity, content: `${skeleton}First entry, the deploy path.` });
+    backdate(first.observationId, '2026-08-01');
+    const second = await remember({ entity, content: `${skeleton}Second entry, the session sweep.` });
+
+    const matches = second.near_matches ?? [];
+    assert.ok(matches.length > 0, 'CONTROL: the fixture must produce an append-only overlap');
+    assert.ok(!Object.hasOwn(matches[0] as object, 'observation_id'), 'append-only matches carry no id');
+    assert.doesNotMatch(
+      second.message,
+      /get_observation/,
+      'a message with no id in the payload must not prescribe a fetch by id'
+    );
+    assert.match(second.message, /Do NOT consolidate/, 'it says the useful thing instead');
+  });
+});
