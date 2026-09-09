@@ -57,25 +57,31 @@ export async function context(input: ContextInput): Promise<ContextResult> {
     // found for topic X"` below, which is a false claim if the leg that would
     // have found it never ran. `recall` can honestly degrade because it still
     // has keyword hits; here the degraded answer IS the misleading one.
+    //
+    // Ordered by RAW similarity, not by the relevance ranking. The default
+    // ordering is `similarity * recallBoost * importance`, which answers "how
+    // relevant is this" — the wrong question for "which entity did the caller
+    // mean" — while the threshold below is expressed in raw-cosine terms.
+    // Reading a score-ordered list gates ONE row's cosine against a position a
+    // DIFFERENT row earned through weighting: a boosted or frequently-recalled
+    // row takes the top with a cosine under the bar while a genuine match sits
+    // below it, and this returns `No entity found` — the exact false negative
+    // the comment above exists to prevent, arrived at from the other side.
+    // Reachable before D21 by demotion (importance < 1 pushing the real match
+    // down); D21's ceiling of 2.0 added the promotion direction, which is the
+    // commoner shape now that `onboard` successfully writes identity facts at
+    // 1.5-2.0.
+    //
+    // `orderBy` rather than re-picking the maximum from the returned array: the
+    // slice happens inside the search and is final, so re-picking still chooses
+    // from a window that weighting selected. With enough boosted rows the real
+    // match is dropped before this code sees it — which is what the first
+    // version of this fix did, and it looked correct.
     const SEMANTIC_THRESHOLD = 0.2;
-    // The floor goes INTO the search, not onto the row it returns (D22). This
-    // reads only `[0]`, and the search ranks by the boosted composite, so a row
-    // under the floor could hold position 0 on its recall count alone and make
-    // this branch answer "No entity found" while a qualifying entity sat at
-    // [1]. Reproduced on the two-row fixture in tests/context-scoring.test.ts
-    // (raw cosines 0.215 and 0.180, a recall count of 100 on the lower one, so
-    // 0.180 * 1.46 = 0.263 takes position [0]) — the topic stopped resolving.
-    // The test asserts that shape rather than these numbers, so re-derive them
-    // from the fixture rather than trusting this comment. Same shape as
-    // the `recall` half of D22 and the same one-argument fix; worth stating
-    // that it is not merely defensive here, because the loss is total — this is
-    // the last leg of exact -> LIKE -> semantic, so a miss is the whole answer.
-    const semanticResults = await semanticSearch(input.topic, {
-      limit: 5,
-      minSimilarity: SEMANTIC_THRESHOLD,
-    });
-    if (semanticResults.length > 0 && semanticResults[0].similarity >= SEMANTIC_THRESHOLD) {
-      entity = findEntityById(semanticResults[0].entity_id) ?? undefined;
+    const semanticResults = await semanticSearch(input.topic, { limit: 5, orderBy: 'similarity' });
+    const bestMatch = semanticResults[0];
+    if (bestMatch && bestMatch.similarity >= SEMANTIC_THRESHOLD) {
+      entity = findEntityById(bestMatch.entity_id) ?? undefined;
     }
   }
 

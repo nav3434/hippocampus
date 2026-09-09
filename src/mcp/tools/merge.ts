@@ -72,8 +72,12 @@ export async function merge(input: MergeInput): Promise<MergeResult> {
   // `importance`: take the maximum. The merged observation holds all of the
   // sources' content, so it is at least as important as its most important
   // source. Taking the min would silently de-prioritise material; falling back
-  // to the 1.0 default (the old behaviour) silently PROMOTES a uniformly
-  // de-prioritised group, since 1.0 is the schema ceiling, not a neutral value.
+  // to the 1.0 default (the old behaviour) resets any group carrying a
+  // deliberate weight back to neutral. When 1.0 was the schema ceiling that was
+  // a silent PROMOTION of a de-prioritised group; since D21 raised the ceiling
+  // to IMPORTANCE_MAX it is also a silent DEMOTION of a boosted one. Max
+  // carry-through is the correct rule at either ceiling — which is why raising
+  // it needed no change here beyond this sentence.
   // The column is `REAL DEFAULT 1.0` without NOT NULL, so guard a null row:
   // `Math.max(null, …)` reads null as 0 — a silent demotion, the mirror of the
   // bug being fixed. The validation above guarantees a non-empty list.

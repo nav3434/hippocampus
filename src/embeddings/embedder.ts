@@ -196,6 +196,21 @@ export interface SemanticSearchOptions {
    */
   since?: string;
   kind?: string;
+  /**
+   * What to sort by before the `limit` slice.
+   *
+   * `'score'` (default) is the decay-weighted ranking —
+   * `similarity * recallBoost * importance` — which is what a relevance query
+   * wants. `'similarity'` is the raw cosine, for callers asking the different
+   * question "which row is the closest match", where weighting is noise.
+   *
+   * The distinction is load-bearing because the slice happens BEFORE the
+   * caller sees anything: a caller that re-picks by raw similarity from a
+   * score-ordered slice is still choosing from a window that weighting
+   * selected, so the raw-best row can have been dropped before it ever
+   * arrives. `context`'s entity resolution is that caller (D21).
+   */
+  orderBy?: 'score' | 'similarity';
 }
 
 export async function semanticSearch(
@@ -286,22 +301,35 @@ export function semanticSearchWithVector(
     };
   });
 
-  // The floor is on RAW cosine and is applied BEFORE the sort-and-slice, so a
-  // boosted row that does not clear it never competes for one of the `limit`
-  // slots. Applying it after the slice — which is what a caller filtering the
-  // returned rows does — is what loses results.
+  // `minSimilarity` and `orderBy` are the two independent halves of one fact:
+  // THE SLICE IS FINAL. The floor decides which rows are allowed to compete for
+  // a slot; `orderBy` decides which key they compete on. Get either wrong and
+  // the row the caller wanted is gone before it ever sees the array — filtering
+  // after the slice loses rows that a boost promoted past the cut (D22), and
+  // re-picking the raw maximum out of a score-ordered slice re-picks from a
+  // window that weighting already chose (D21). Both keys are computed for every
+  // row either way, so neither costs anything but the comparison.
   const floor = options?.minSimilarity;
-  if (floor !== undefined && !Number.isFinite(floor)) {
-    // A NaN floor drops every row and returns an empty set with no error — the
-    // same "silently returns nothing" failure `since` is asserted against two
-    // fields up (D13/D15). An empty result is indistinguishable from an empty
-    // database, so this throws instead. The value is safe to name: it is a
-    // caller-supplied number, never memory content.
-    throw new Error(`semanticSearchWithVector: minSimilarity must be a finite number, got ${String(floor)}`);
+  if (floor !== undefined && !(Number.isFinite(floor) && floor >= -1 && floor <= 1)) {
+    // Refused as a caller error rather than honoured, in BOTH directions and
+    // for the same reason the range is checked at all: a cosine cannot leave
+    // [-1, 1], so a floor outside it cannot be what anyone meant. The two
+    // directions fail differently and only one is loud — a floor above 1 (or
+    // NaN) drops every row and returns an empty set with no error, which is
+    // indistinguishable from an empty database and is the exact failure `since`
+    // is asserted against two fields up (D13/D15); a floor below -1 merely
+    // filters nothing. Refusing both keeps the rule statable in one line
+    // instead of leaving the harmless half to look deliberate. The value is
+    // safe to name: it is a caller-supplied number, never memory content.
+    throw new Error(
+      `semanticSearchWithVector: minSimilarity must be a finite number in [-1, 1], got ${String(floor)}`
+    );
   }
   const eligible = floor === undefined ? scored : scored.filter(r => r.similarity >= floor);
 
-  eligible.sort((a, b) => b.rank_score - a.rank_score);
+  eligible.sort((a, b) =>
+    options?.orderBy === 'similarity' ? b.similarity - a.similarity : b.rank_score - a.rank_score
+  );
   return eligible.slice(0, limit);
 }
 
