@@ -11,6 +11,7 @@ import { context } from './tools/context.js';
 import { consolidate } from './tools/consolidate.js';
 import { exportMemories } from './tools/export.js';
 import { checkVersion } from './tools/check-version.js';
+import { getObservation } from './tools/get-observation.js';
 import { onboard } from './tools/onboard.js';
 import { registerContextResources } from './resources/context.js';
 import { normalizeParams } from './param-normalization.js';
@@ -571,6 +572,41 @@ export function createMcpServer(): McpServer {
           entity: args.entity,
           version_hash: args.version_hash,
         });
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    'get_observation',
+    "Read ONE observation by its observation_id. The only id-taking tool that does not destroy anything: `forget` deletes a row and `merge` deletes every source row it is given, so use this first to see what an id actually addresses. Ids come from `remember` (`observationId`, and each `near_matches[].observation_id`, where the content beside them is only a 200-char preview), from `recall`, and from `export`. Bounded: exactly the one row named, never more than the 50000-char storage cap. This is a read — it leaves `recall_count` and `last_recalled_at` untouched, unlike `recall`.",
+    {
+      observation_id: z
+        .string()
+        .min(1)
+        .max(200)
+        .describe('The id of the observation to read'),
+    },
+    async (args) => {
+      try {
+        const result = getObservation({ observation_id: args.observation_id });
         return {
           content: [
             {
