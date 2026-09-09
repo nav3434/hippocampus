@@ -52,7 +52,7 @@ const { cosineSimilarity } = await import('../src/embeddings/similarity.js');
 // SPREAD_DECAY fails two tests, since the fixture window
 // `directSim < spreadSim < directSim / SPREAD_DECAY` stops holding. Retuning
 // RECALL_BOOST_ALPHA is asymmetric: LOWERING it fails several tests (the
-// boost-dependent fixtures stop clearing their bars — measured, 0.05 fails 7),
+// boost-dependent fixtures stop clearing their bars — measured, 0.05 fails 8),
 // while RAISING it fails none of them, because every fixture moves with it and
 // stays inside its window. That is why the sweep suite below pins the constant
 // against the worked example CLAUDE.md quotes — importing a constant protects
@@ -99,9 +99,11 @@ describe('recall returns as many rows as it was asked for (D22)', () => {
   ];
 
   // Its own entity type, so every query in this block is scoped to its own
-  // fixture. The file shares one database across five describe blocks, and a
+  // fixture. The file shares one database across all of its describe blocks,
+  // and a
   // block that queries unscoped is correct only for as long as suites run in
-  // declaration order — which is not a property worth depending on.
+  // declaration order — which is not a property worth depending on. (No count
+  // is named here on purpose: the last one said five and went stale twice.)
   const SLOT_TYPE = 'slot-fixture';
 
   let qualifying = 0;
