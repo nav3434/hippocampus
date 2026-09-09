@@ -132,8 +132,9 @@ function ongoingPrompt(sourceHint: string, existingSection: string): string {
    - \`importance\`: Pass 1.5–2.0 for identity facts, core principles, and load-bearing decisions. Default 1.0.
 
 4. **On the \`remember\` response — handle \`near_matches\`:**
-   - \`novelty\` < 0.3 (and a near-match exists with high overlap) → use \`update\` on the existing observation, or \`merge\` if multiple cluster. Do not accumulate duplicates.
-   - **Exception — \`append_only: true\` in the response:** the entity is a log (dated entries sharing a format). Overlap between entries is expected and is NOT redundancy. Never \`update\`, \`merge\` or otherwise consolidate its observations, whatever the novelty score says; its \`near_matches\` are truncated previews, not full content.
+   - \`near_matches[].content\` is always a truncated PREVIEW, on every entity — never the stored text, so never a valid \`update\` key. The handle is \`near_matches[].observation_id\`.
+   - \`novelty\` < 0.3 (and a near-match exists with high overlap) → consolidate with \`merge({observation_ids: [<this response's observationId>, <the near match's observation_id>], content: "<the combined text>"})\`. Do not accumulate duplicates. Use \`merge\`, not \`update\`: the new observation is ALREADY stored by the time you read this, so updating the old one just leaves the duplicate behind. \`merge\` refuses a group carrying two or more different kinds — if the kinds differ, \`update\` one to the common kind first, or merge same-kind observations only.
+   - **Exception — \`append_only: true\` in the response:** the entity is a log (dated entries sharing a format). Overlap between entries is expected and is NOT redundancy. Never \`update\`, \`merge\` or otherwise consolidate its observations, whatever the novelty score says; its \`near_matches\` carry no \`observation_id\` at all, deliberately — there is nothing there to act on.
    - \`novelty\` 0.3–0.6 → capture, but note the relationship to the near-match in your reasoning.
    - \`novelty\` > 0.6 → genuine new information.
 

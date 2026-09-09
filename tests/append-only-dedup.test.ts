@@ -272,15 +272,30 @@ describe('dedup is scoped to the same UTC calendar day', () => {
     assert.equal(observationsFor('project:unlisted-log').length, 2);
   });
 
-  test('non-append-only entities keep full near_match content', async () => {
-    // Consolidation IS the intended workflow off the log entities ("consolidate =
-    // clustering only, the AI does the merging"), and it needs the exact content
-    // as an update key. The preview truncation must not leak into that path.
+  test('non-append-only entities get a preview plus an addressable id', async () => {
+    // This assertion was inverted by D20; it used to require the FULL stored
+    // content here, on the argument that consolidation is the intended workflow
+    // off the log entities and needs the exact `update` key. That reasoning was
+    // sound and the shape was not: the report is unbounded, so three overlapping
+    // 45,000-char observations produced a 115KB response on a write that had
+    // SUCCEEDED, which the MCP client rejected for size — leaving the caller an
+    // error string whose natural remedy is a retry, i.e. a double write.
+    //
+    // The capability survives the cap because the exact content was never the
+    // only handle. `observation_id` addresses the same row, and `merge` — which
+    // takes ids and needs at least two — is satisfied by this response's own
+    // `observationId` plus the near match's. Consolidation by id is exercised
+    // end to end in tests/near-match-response-size.test.ts.
     const first = await remember({ entity: 'project:full-near-match', content: HARVEST_JULY });
     backdateObservation(first.observationId, '2026-07-31');
     const second = await remember({ entity: 'project:full-near-match', content: HARVEST_AUGUST });
 
-    assert.equal(second.near_matches?.[0].content, HARVEST_JULY);
+    const reported = second.near_matches?.[0];
+    assert.ok(reported, 'the overlap must still be reported');
+    assert.ok(HARVEST_JULY.length > 200, 'fixture must be long enough to be truncated');
+    assert.notEqual(reported!.content, HARVEST_JULY, 'the stored text is no longer echoed back');
+    assert.ok(reported!.content.length <= 201, 'preview only');
+    assert.equal(reported!.observation_id, first.observationId, 'the handle addresses the overlap');
     assert.match(second.message, /consider consolidating/);
   });
 

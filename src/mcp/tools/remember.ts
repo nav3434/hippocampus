@@ -10,7 +10,7 @@ import { config, isAppendOnlyEntity } from '../../config.js';
 export const DEDUP_THRESHOLD = 0.85;
 const NEAR_MATCH_THRESHOLD = 0.5;
 const MAX_NEAR_MATCHES = 3;
-const APPEND_ONLY_PREVIEW_CHARS = 200;
+const NEAR_MATCH_PREVIEW_CHARS = 200;
 
 export const rememberSchema = z.object({
   content: z
@@ -45,6 +45,9 @@ export type RememberInput = z.infer<typeof rememberSchema>;
  *
  * A >= 0.85 match blocked by either guard is not discarded — it is surfaced in
  * `near_matches` so the caller still sees the overlap, without losing data.
+ * That report is a bounded preview plus an `observation_id`, never the stored
+ * text — see the comment on `reportedMatches` below for why the size of a
+ * disclosure matters as much as its presence.
  *
  * Calendar-day equality rather than a rolling N-hour window: a rolling window
  * fails destructively at the midnight boundary (23:58 and 00:05 are 7 minutes
@@ -56,6 +59,18 @@ function utcDay(timestamp: string | null | undefined): string | null {
   // created_at is SQLite datetime('now') — 'YYYY-MM-DD HH:MM:SS' in UTC.
   if (!timestamp || timestamp.length < 10) return null;
   return timestamp.slice(0, 10);
+}
+
+export interface NearMatch {
+  /** Bounded preview — enough to identify the overlap, never the full stored text. */
+  content: string;
+  similarity: number;
+  /**
+   * Absent on append-only entities: an id is a `forget`/`merge` key, and handing
+   * one back on a log entity is the D10 invited-deletion hazard in a shorter
+   * string. Present everywhere else, where consolidation is the intended workflow.
+   */
+  observation_id?: string;
 }
 
 export interface RememberResult {
@@ -75,7 +90,12 @@ export interface RememberResult {
   /** Everything a `replace_kind` write deleted, so it can be put back. */
   replaced_observations?: Array<{ observation_id: string; content: string }>;
   append_only?: boolean;
-  near_matches?: Array<{ content: string; similarity: number }>;
+  /**
+   * Overlapping observations that were REPORTED, never touched. `content` is a
+   * bounded preview on every entity (see NEAR_MATCH_PREVIEW_CHARS); the handle
+   * is `observation_id`, which is withheld on append-only entities.
+   */
+  near_matches?: NearMatch[];
   novelty?: number;
 }
 
@@ -135,7 +155,7 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
   const appendOnly = isAppendOnlyEntity(entity.name);
   const today = new Date().toISOString().slice(0, 10);
   let bestMatch: { similarity: number; index: number } | null = null;
-  const nearMatches: Array<{ content: string; similarity: number }> = [];
+  const nearMatches: Array<{ content: string; similarity: number; observation_id: string }> = [];
 
   for (let i = 0; i < existing.length; i++) {
     const sim = cosineSimilarity(vector, existing[i].vector);
@@ -151,7 +171,11 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
       }
     } else {
       // Includes >= 0.85 matches held back by a guard: report, never destroy.
-      nearMatches.push({ content: existing[i].content, similarity: sim });
+      nearMatches.push({
+        content: existing[i].content,
+        similarity: sim,
+        observation_id: existing[i].observation_id,
+      });
     }
   }
 
@@ -159,19 +183,33 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
   nearMatches.sort((a, b) => b.similarity - a.similarity);
   if (nearMatches.length > MAX_NEAR_MATCHES) nearMatches.length = MAX_NEAR_MATCHES;
 
-  if (appendOnly) {
-    // Truncated deliberately, and not only for tokens. near_matches content is
-    // byte-identical to the stored observation, which is exactly the key
-    // `update` matches on (`o.content === old_content`). Handing an LLM that
-    // key alongside a "consider consolidating" nudge is how an entry this
-    // guard just preserved gets deleted one call later — the same data loss,
-    // one layer up. A preview identifies the overlap without being executable.
-    for (const match of nearMatches) {
-      if (match.content.length > APPEND_ONLY_PREVIEW_CHARS) {
-        match.content = `${match.content.slice(0, APPEND_ONLY_PREVIEW_CHARS)}…`;
-      }
-    }
-  }
+  // Previews on EVERY entity, and the reason differs by entity kind (D20).
+  //
+  // On append-only entities it is the D10 argument: near_matches content was
+  // byte-identical to the stored observation, i.e. the exact key `update`
+  // matches on (`o.content === old_content`), handed over next to a "consider
+  // consolidating" nudge — the same data loss, one layer up.
+  //
+  // Everywhere else the payload was deliberate, because consolidation IS the
+  // intended workflow there. What killed that: the report is unbounded. Three
+  // matches of 45,000 chars is a 115KB response on a write that SUCCEEDED, and
+  // an MCP client that rejects it for size shows the caller an error string —
+  // whose natural remedy is a retry, which double-writes. The observation is
+  // still in the database, so the full text here was only ever a convenience
+  // copy of live data; `observation_id` addresses the same row in 36 bytes.
+  //
+  // The asymmetry that decides the cap: `replaced_observation` and
+  // `replaced_observations` stay uncapped, because those rows are DELETED and
+  // the response is the only copy. Capping a copy of live data loses nothing;
+  // capping the only copy of dead data loses everything.
+  const reportedMatches: NearMatch[] = nearMatches.map(match => ({
+    content:
+      match.content.length > NEAR_MATCH_PREVIEW_CHARS
+        ? `${match.content.slice(0, NEAR_MATCH_PREVIEW_CHARS)}…`
+        : match.content,
+    similarity: match.similarity,
+    ...(appendOnly ? {} : { observation_id: match.observation_id }),
+  }));
 
   if (bestMatch) {
     const match = existing[bestMatch.index];
@@ -190,7 +228,7 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
         deduplicated: true,
         replaced: false,
       };
-      if (nearMatches.length > 0) result.near_matches = nearMatches;
+      if (reportedMatches.length > 0) result.near_matches = reportedMatches;
       return result;
     }
 
@@ -229,7 +267,7 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
       replaced_observation: replacedContent,
       replaced_observation_id: replacedId,
     };
-    if (nearMatches.length > 0) result.near_matches = nearMatches;
+    if (reportedMatches.length > 0) result.near_matches = reportedMatches;
     return result;
   }
 
@@ -267,14 +305,14 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
     result.message += '. Low novelty — this information may already be captured by existing observations';
   }
 
-  if (nearMatches.length > 0) {
-    result.near_matches = nearMatches;
-    const listed = nearMatches
+  if (reportedMatches.length > 0) {
+    result.near_matches = reportedMatches;
+    const listed = reportedMatches
       .map(m => `"${m.content.slice(0, 40)}..." (${m.similarity.toFixed(3)})`)
       .join(', ');
     result.message += appendOnly
-      ? `. ${nearMatches.length} earlier entr${nearMatches.length === 1 ? 'y overlaps' : 'ies overlap'} — expected here, since every write is a separate dated record sharing a format. Do NOT consolidate, update or merge them (previews only): ${listed}`
-      : `. These existing observations overlap — consider consolidating (nothing was deleted): ${listed}`;
+      ? `. ${reportedMatches.length} earlier entr${reportedMatches.length === 1 ? 'y overlaps' : 'ies overlap'} — expected here, since every write is a separate dated record sharing a format. Do NOT consolidate, update or merge them (previews only): ${listed}`
+      : `. These existing observations overlap — consider consolidating (nothing was deleted). near_matches[].content is a preview, not the stored text: consolidate with merge({observation_ids: [this response's observationId, the near match's observation_id], content: ...}): ${listed}`;
   }
 
   return result;
