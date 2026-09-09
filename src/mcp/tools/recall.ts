@@ -29,8 +29,19 @@ export const recallSchema = z.object({
 
 export type RecallInput = z.infer<typeof recallSchema>;
 
-const SIMILARITY_THRESHOLD = 0.15;
-const SPREAD_DECAY = 0.5;
+/**
+ * Raw-cosine floor for direct semantic hits. Exported so tests compute against
+ * the real value instead of a copy: a test that mirrors a constant drifts with
+ * it and reports nothing, which is what the first version of these guards did.
+ */
+export const SIMILARITY_THRESHOLD = 0.15;
+/**
+ * Damping applied to spreading-activation rows. Exported for the same reason.
+ * It does two jobs — it is the rank penalty that keeps related memories below
+ * directly-matched ones, and (because the threshold comparison is made on the
+ * damped value) it is also their entry bar.
+ */
+export const SPREAD_DECAY = 0.5;
 
 interface MemoryResult {
   observation_id: string;

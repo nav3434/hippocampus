@@ -14,12 +14,15 @@
  * writes to: `context` takes no type filter, so any boosted row seeded here
  * would compete for its topic.
  *
- * Every guard here carries a POSITIVE CONTROL: an assertion that the fixture
- * would have fired against the unfixed code. Without one, "the defect no longer
- * happens" is equally satisfied by a fixture that never reached the defect —
- * which is how three guards in this repo passed vacuously in a single session.
+ * Every guard here that could pass vacuously carries a POSITIVE CONTROL: an
+ * assertion that the fixture would have fired against the unfixed code.
+ * Without one, "the defect no longer happens" is equally satisfied by a
+ * fixture that never reached the defect — which is how three guards in this
+ * repo passed vacuously in a single session. The exception is the rank-key
+ * strip suite, where the assertion is an absence and there is nothing for a
+ * control to establish beyond the non-emptiness it already checks.
  */
-import { describe, test, before, after } from 'node:test';
+import { describe, test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,20 +35,24 @@ process.env.HIPPO_DB_PATH = DB_PATH;
 
 const { initDatabase, closeDatabase, getDatabase } = await import('../src/db/index.js');
 const { remember } = await import('../src/mcp/tools/remember.js');
-const { recall } = await import('../src/mcp/tools/recall.js');
+const { recall, SIMILARITY_THRESHOLD, SPREAD_DECAY } = await import('../src/mcp/tools/recall.js');
 const { findOrCreateEntity } = await import('../src/db/entities.js');
 const { createRelationship } = await import('../src/db/relationships.js');
-const { generateEmbedding, semanticSearchWithVector } = await import('../src/embeddings/embedder.js');
+const { generateEmbedding, semanticSearchWithVector, RECALL_BOOST_ALPHA } = await import('../src/embeddings/embedder.js');
 const { cosineSimilarity } = await import('../src/embeddings/similarity.js');
 
-// Mirrors of the private constants in the modules under test. If either drifts,
-// the precondition assertions below fail rather than the guards silently
-// measuring against the wrong number.
-const SIMILARITY_THRESHOLD = 0.15;
-const SPREAD_DECAY = 0.5;
-const ALPHA = 0.1;
-
-const boostFor = (recallCount: number) => 1 + ALPHA * Math.log(1 + recallCount);
+// IMPORTED, not mirrored. A test that re-declares the constant it is testing
+// against silently desyncs from it, and every fixture margin computed here then
+// describes a system that no longer exists.
+//
+// What that does and does not buy, stated precisely because the first version
+// of this comment overclaimed: retuning SPREAD_DECAY now fails two tests, since
+// the fixture window `directSim < spreadSim < directSim / SPREAD_DECAY` stops
+// holding. Retuning RECALL_BOOST_ALPHA fails nothing — the fixtures move with
+// it and stay inside their windows, by design, because it is a tuning knob and
+// not a contract. The constant is shared between the search and the spread path
+// so the two cannot disagree; nothing here claims to detect it being changed.
+const boostFor = (recallCount: number) => 1 + RECALL_BOOST_ALPHA * Math.log(1 + recallCount);
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
 function setRecallCount(observationId: string, count: number): void {
@@ -299,6 +306,82 @@ describe('recall reports raw cosine in `similarity`, on both paths (D22)', () =>
 });
 
 // ---------------------------------------------------------------------------
+// The decay must be what decides the order, not decoration on it
+// ---------------------------------------------------------------------------
+
+describe('SPREAD_DECAY subordinates a related memory that would otherwise win (D22)', () => {
+  // The suite above proves the decay does NOT guarantee spread rows rank last.
+  // This one proves it still decides the order in the case it was built for:
+  // a related memory whose raw cosine BEATS the direct hit, which the damping
+  // must nonetheless place second. Without this, removing the decay from
+  // ranking entirely — or retuning it to 0.9 — left the whole file green.
+  const QUERY = 'a harbour seal hauled out on the rocks';
+  const DIRECT_TEXT = 'Seals rest on the skerries outside the harbour mouth';
+  const SPREAD_TEXT = 'A harbour seal hauled out on the rocks at low tide';
+  const ANCHOR_TYPE = 'decay-anchor';
+  const RELATED_TYPE = 'decay-related';
+
+  let directSim = 0;
+  let spreadSim = 0;
+
+  before(async () => {
+    await remember({ content: DIRECT_TEXT, entity: 'decay-direct-e', type: ANCHOR_TYPE });
+    await remember({ content: SPREAD_TEXT, entity: 'decay-spread-e', type: RELATED_TYPE });
+    const anchor = findOrCreateEntity('decay-direct-e', ANCHOR_TYPE);
+    const related = findOrCreateEntity('decay-spread-e', RELATED_TYPE);
+    createRelationship(anchor.id, related.id, 'mentions');
+
+    const q = await generateEmbedding(QUERY);
+    directSim = cosineSimilarity(q, await generateEmbedding(DIRECT_TEXT));
+    spreadSim = cosineSimilarity(q, await generateEmbedding(SPREAD_TEXT));
+  });
+
+  test('precondition: undamped the spread row wins, damped it loses', () => {
+    // Neither row is boosted, so each rank score is its cosine times the decay
+    // that applies to it. The window this fixture must sit in is
+    // `directSim < spreadSim < directSim / SPREAD_DECAY`.
+    assert.ok(
+      spreadSim > directSim,
+      `spread ${spreadSim.toFixed(3)} does not beat direct ${directSim.toFixed(3)} — ` +
+      'without the decay there would be nothing for it to overturn'
+    );
+    assert.ok(
+      spreadSim * SPREAD_DECAY < directSim,
+      `damped spread ${(spreadSim * SPREAD_DECAY).toFixed(3)} still beats direct ` +
+      `${directSim.toFixed(3)} — the decay is too weak to decide this fixture`
+    );
+    assert.ok(spreadSim * SPREAD_DECAY >= SIMILARITY_THRESHOLD, 'the spread row must clear its own bar');
+  });
+
+  test('the direct hit ranks first even though it is the weaker cosine', async () => {
+    const result = await recall({
+      query: QUERY,
+      type: ANCHOR_TYPE,
+      spread: true,
+      format: 'full',
+    }) as { memories: Array<{ entity: string; similarity?: number }> };
+
+    const directIdx = result.memories.findIndex(m => m.entity === 'decay-direct-e');
+    const spreadIdx = result.memories.findIndex(m => m.entity === 'decay-spread-e');
+    assert.ok(directIdx >= 0 && spreadIdx >= 0, 'both rows should be present');
+    assert.ok(
+      directIdx < spreadIdx,
+      `the related memory ranked at ${spreadIdx}, ahead of the direct hit at ` +
+      `${directIdx} — the decay is no longer subordinating spread rows`
+    );
+
+    // POSITIVE CONTROL: the displayed values run the other way, so this ordering
+    // cannot have come from sorting on `similarity`.
+    const direct = result.memories[directIdx];
+    const spread = result.memories[spreadIdx];
+    assert.ok(
+      (spread.similarity ?? 0) > (direct.similarity ?? 0),
+      'fixture does not discriminate: the ranked order matches the cosine order'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // A consequence of the fix, pinned rather than left to be rediscovered
 // ---------------------------------------------------------------------------
 
@@ -412,6 +495,10 @@ describe('the spread re-sort preserves the search ranking (D22)', () => {
     await remember({ content: STRONGER, entity: 'rank-stronger', type: 'voyage' });
     await remember({ content: WEAKER, entity: 'rank-weaker', type: 'voyage' });
     await remember({ content: 'A ledger of port fees paid in cash', entity: 'rank-unrelated', type: 'voyage' });
+    // A second, much weaker row on the same entity as STRONGER — dissimilar
+    // enough (pairwise ~0.21) that dedup-on-write keeps both rather than
+    // collapsing them into one, which would leave every group a single row.
+    await remember({ content: 'Lichen grows thick on the north face of the wall', entity: 'rank-stronger', type: 'voyage' });
     const anchor = findOrCreateEntity('rank-stronger', 'voyage');
     const far = findOrCreateEntity('rank-unrelated', 'voyage');
     createRelationship(anchor.id, far.id, 'mentions');
@@ -424,6 +511,20 @@ describe('the spread re-sort preserves the search ranking (D22)', () => {
       .prepare('SELECT id FROM observations WHERE content = ?')
       .get(WEAKER) as { id: string };
     setRecallCount(row.id, BOOST_COUNT);
+  });
+
+  // Reset before EVERY test, not once. `recall` calls `touchRecalledObservations`
+  // on what it returns, so each test in this suite raises the recall counts of
+  // the rows the next one measures — and this fixture's whole point is a
+  // recall-count difference. Left unreset, the unboosted row overtakes after
+  // about five recalls and the suite starts failing on its own side effects,
+  // which is how the index test added later first surfaced.
+  beforeEach(() => {
+    const db = getDatabase();
+    for (const [content, count] of [[STRONGER, 0], [WEAKER, BOOST_COUNT]] as const) {
+      const row = db.prepare('SELECT id FROM observations WHERE content = ?').get(content) as { id: string };
+      setRecallCount(row.id, count);
+    }
   });
 
   test('precondition: the boost is what inverts the order, not the cosine', () => {
@@ -496,6 +597,43 @@ describe('the spread re-sort preserves the search ranking (D22)', () => {
     );
   });
 
+  test('an index line shows the best similarity in its entity group', async () => {
+    // The formatter's own comment claims this ("what makes it useful for
+    // deciding where to expand"), and picking the WORST of each group instead
+    // left every test green.
+    // `rank-stronger` carries a second, weaker observation (added in this
+    // suite's setup) so at least one entity group has a best and a worst to
+    // tell apart — otherwise the assertion is satisfied by any choice.
+    const opts = { query: QUERY, type: 'voyage', limit: 50 } as const;
+    const full = await recall({ ...opts, format: 'full' }) as {
+      memories: Array<{ entity: string; similarity?: number }>;
+    };
+    const index = await recall({ ...opts, format: 'index' }) as { text: string };
+
+    const best = new Map<string, number>();
+    for (const m of full.memories) {
+      if (m.similarity === undefined) continue;
+      best.set(m.entity, Math.max(best.get(m.entity) ?? -Infinity, m.similarity));
+    }
+    assert.ok(best.size > 0, 'no scored rows to compare');
+
+    for (const line of index.text.split('\n').slice(1)) {
+      const [name, , , shown] = line.split('|');
+      const expected = best.get(name);
+      if (expected === undefined) continue;
+      assert.equal(shown, expected.toFixed(2), `index line for ${name} does not show its best similarity`);
+    }
+
+    // POSITIVE CONTROL: at least one entity contributes more than one row, so
+    // "best" and "worst" are distinguishable at all.
+    const counts = new Map<string, number>();
+    for (const m of full.memories) counts.set(m.entity, (counts.get(m.entity) ?? 0) + 1);
+    assert.ok(
+      [...counts.values()].some(n => n > 1),
+      'every entity has exactly one row, so best-vs-worst cannot be told apart here'
+    );
+  });
+
   test('POSITIVE CONTROL: the displayed values would sort the other way', async () => {
     // Two controls in one. (1) `spread: false` already ranks the boosted row
     // first, so the test above measures the re-sort rather than the search.
@@ -537,8 +675,25 @@ describe('keyword-fallback rows carry no similarity (D22)', () => {
   const NONSENSE_ENTITY = 'zqxjvt-registry';
   const UNRELATED = 'The tide comes in twice a day along the estuary';
 
+  // Second fixture, for the ranking test below: an entity whose NAME contains
+  // the query while its content sits well clear of the similarity floor.
+  const NAMED_ENTITY = 'harbour seal filings';
+  const FAR_CONTENT = 'Quarterly depreciation schedule for office furniture';
+  const SEMANTIC_ENTITY = 'kw-semantic';
+  const NEAR_CONTENT = 'Harbour seals bask on the skerries at low tide';
+
   before(async () => {
     await remember({ content: UNRELATED, entity: NONSENSE_ENTITY, type: 'note' });
+    await remember({ content: FAR_CONTENT, entity: NAMED_ENTITY, type: 'note' });
+    await remember({ content: NEAR_CONTENT, entity: SEMANTIC_ENTITY, type: 'note' });
+  });
+
+  test('precondition: the named entity is unreachable semantically', async () => {
+    const q = await generateEmbedding('harbour seal');
+    const far = cosineSimilarity(q, await generateEmbedding(FAR_CONTENT));
+    const near = cosineSimilarity(q, await generateEmbedding(NEAR_CONTENT));
+    assert.ok(far < SIMILARITY_THRESHOLD, `far content scores ${round3(far)}, above the floor`);
+    assert.ok(near >= SIMILARITY_THRESHOLD, `near content scores ${round3(near)}, below the floor`);
   });
 
   test('precondition: the semantic leg cannot reach this row', async () => {
@@ -548,6 +703,41 @@ describe('keyword-fallback rows carry no similarity (D22)', () => {
       sim < SIMILARITY_THRESHOLD,
       `cosine ${round3(sim)} clears the floor — the row could arrive semantically ` +
       'and the assertion below would be measuring the wrong leg'
+    );
+  });
+
+  test('a keyword-only row ranks below every semantic row', async () => {
+    // The `ScoredMemory` comment says keyword rows carry a literal 0 and sort
+    // last. Nothing checked it: giving them a huge rank left the suite green,
+    // while in practice a LIKE match with no cosine at all would displace real
+    // matches out of `limit`. Only the spread path re-sorts, so that is where
+    // a wrong rank would actually surface.
+    //
+    // This needs a query that is BOTH meaningful (so semantic rows exist to
+    // rank against) and a substring of an entity NAME whose content is far away
+    // (so that row can only arrive by LIKE). The nonsense-token fixture above
+    // cannot do it: nothing matches a nonsense token semantically, so there is
+    // nothing for the keyword row to rank below.
+    const result = await recall({
+      query: 'harbour seal',
+      limit: 50,
+      spread: true,
+      format: 'full',
+    }) as { memories: Array<{ entity: string; similarity?: number }> };
+
+    const keywordIdx = result.memories.findIndex(m => m.similarity === undefined);
+    assert.ok(keywordIdx >= 0, 'need a keyword-only row in the result to place');
+    const semanticAfter = result.memories.slice(keywordIdx + 1).filter(m => m.similarity !== undefined);
+    assert.equal(
+      semanticAfter.length,
+      0,
+      `${semanticAfter.length} semantic row(s) ranked below a keyword-only row`
+    );
+
+    // POSITIVE CONTROL: there is something for it to rank below.
+    assert.ok(
+      result.memories.slice(0, keywordIdx).some(m => m.similarity !== undefined),
+      'no semantic row present, so the ordering claim is untested'
     );
   });
 
@@ -580,11 +770,16 @@ describe('an unusable minSimilarity throws rather than emptying the result (D22)
     );
   });
 
-  for (const bad of [NaN, Infinity, -Infinity]) {
+  // A cosine cannot leave [-1, 1], so every one of these is a floor nobody
+  // could have meant. They fail differently — NaN, +Infinity and 5 drop every
+  // row and return an empty set indistinguishable from an empty database;
+  // -Infinity and -2 filter nothing — and are refused together because the
+  // rule is statable in one line only if it covers both directions.
+  for (const bad of [NaN, Infinity, -Infinity, 5, -2, 1.0001]) {
     test(`minSimilarity ${String(bad)} is an error, not an empty answer`, () => {
       assert.throws(
         () => semanticSearchWithVector(queryVector, { limit: 10, minSimilarity: bad }),
-        /minSimilarity must be a finite number/,
+        /minSimilarity must be a finite number in \[-1, 1\]/,
         // The three differ in what they do, and are refused together because
         // all three are a caller error rather than a request: NaN compares
         // false against every row and +Infinity clears none, so both return []
@@ -598,8 +793,12 @@ describe('an unusable minSimilarity throws rather than emptying the result (D22)
   }
 
   test('a finite floor still filters rather than throwing', () => {
-    assert.doesNotThrow(() => semanticSearchWithVector(queryVector, { limit: 10, minSimilarity: 0.9 }));
-    assert.doesNotThrow(() => semanticSearchWithVector(queryVector, { limit: 10, minSimilarity: 0 }));
+    for (const ok of [0.9, 0, -1, 1]) {
+      assert.doesNotThrow(
+        () => semanticSearchWithVector(queryVector, { limit: 10, minSimilarity: ok }),
+        `minSimilarity ${ok} is inside [-1, 1] and must be accepted`
+      );
+    }
   });
 });
 
