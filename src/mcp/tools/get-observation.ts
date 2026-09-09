@@ -43,20 +43,20 @@ export interface GetObservationResult {
 /**
  * Read exactly one observation by its id.
  *
- * The gap this closes: observation ids are handed out by `remember`
- * (`observationId`), `recall` (`observation_id`), `export`, and — since the
- * near-match preview cap on branch `claude/zealous-bhaskara-725771` — by
- * `remember`'s `near_matches`, where the id sits beside a 200-char preview of
- * a row that may be 50,000 chars long. Both tools that ACCEPT an id destroy
- * rows: `forget` deletes them, `merge` deletes every source and keeps only the
- * text the caller composes. Until now there was no id-taking read, so a caller
- * holding a destruction key had no bounded way to see what it addressed.
+ * The gap this closes: observation ids are handed out by `remember` (as
+ * `observationId`), by `recall` with `format: "full"`, and by `export` with
+ * `format: "json"` — the other recall/export formats return text blobs with no
+ * ids. Both tools that ACCEPT an id destroy rows: `forget` deletes them,
+ * `merge` deletes every source and keeps only the text the caller composes.
+ * Until now there was no id-taking read, so a caller holding a destruction key
+ * had no bounded way to see what it addressed.
  *
- * Bounded by construction: exactly the one row named, and a row can never
- * exceed the 50,000-char cap `remember` and `merge` both enforce at the wire
- * boundary. That is a real bound but a modest one — roughly 12,500 tokens, not
- * "small". It is the floor for seeing that content at all, which is the claim
- * being made, and nothing more.
+ * Bounded by construction, and the bound is on the ROW, not on the response:
+ * exactly the one row named, and a row cannot exceed the 50,000-char cap
+ * `remember` enforces on write. JSON escaping then inflates that on the wire —
+ * measured 1.01x on prose, 1.21x on newline-dense text, and 2.01x on a row of
+ * pure quote characters, so the serialized worst case is ~100,000 chars.
+ * A real bound, then, but not a small one, and stated as what it is.
  *
  * This is a READ. It does not touch `recall_count` or `last_recalled_at`,
  * following the rule the codebase already keeps: search bumps access telemetry
@@ -82,13 +82,20 @@ export function getObservation(input: GetObservationInput): GetObservationResult
 
   const entity = findEntityById(observation.entity_id);
   if (!entity) {
-    // An observation whose entity row is gone is a broken invariant, not a
-    // miss. Say which, rather than reporting it as a plain not-found and
-    // sending the caller to look for a deletion that never happened.
+    // Unreachable in-process: `entity_id` is `REFERENCES entities(id) ON
+    // DELETE CASCADE` with `foreign_keys = ON`, so deleting an entity takes
+    // its observations with it. It becomes reachable only across connections,
+    // because the two SELECTs above are not in one transaction — a second
+    // process deleting the entity between them lands here. In THAT case the
+    // memory really was deleted, so this message must not assert the opposite;
+    // an earlier draft called it a data-integrity problem and would have been
+    // wrong in the one situation it can actually occur. Wrapping both reads in
+    // a transaction would remove the ambiguity, at the cost of ceremony on a
+    // path no in-process caller can reach.
     return {
       success: false,
       append_only: false,
-      message: `Observation ${input.observation_id} exists but its entity (${observation.entity_id}) is missing. This is a data integrity problem, not a deleted memory.`,
+      message: `Observation ${input.observation_id} exists but its entity (${observation.entity_id}) could not be read. Either the entity was deleted between the two reads this call makes, or the rows are inconsistent — this call cannot tell which, and says so rather than guessing.`,
     };
   }
 

@@ -32,6 +32,8 @@ const { forget } = await import('../src/mcp/tools/forget.js');
 const { getObservation } = await import('../src/mcp/tools/get-observation.js');
 const { findEntityByName } = await import('../src/db/entities.js');
 const { getObservationsByEntity, getObservationsByIds } = await import('../src/db/observations.js');
+const { exportMemories } = await import('../src/mcp/tools/export.js');
+const { createMcpServer } = await import('../src/mcp/server.js');
 
 before(() => {
   initDatabase();
@@ -109,13 +111,48 @@ describe('get_observation is bounded where the prescribed recall re-read is not'
     assert.equal(result.observation!.observation_id, target);
     assert.equal(result.observation!.content, rowById(target).content);
 
+    // Bound the PROPERTY, not the fixture. An earlier version asserted
+    // `size < rowChars * 1.2`, which passed only because ledgerPart() pads with
+    // characters JSON never escapes. Newline-dense text — which is what a real
+    // harvest entry or research ledger actually is — measures 1.21x, and a row
+    // of quote characters measures 2.01x, so that assertion pinned the fixture's
+    // escape density rather than the tool. The real claim is "the row it was
+    // asked for, plus a small fixed envelope", and escaping belongs to the row.
     const size = wireSize(result);
-    const rowChars = rowById(target).content.length;
-    // The bound claimed is "the row plus a small envelope", not "small".
+    const escapedRowChars = JSON.stringify(rowById(target).content).length;
+    const envelope = size - escapedRowChars;
     assert.ok(
-      size < rowChars * 1.2,
-      `response (${size}) must not materially exceed the row it returns (${rowChars})`
+      envelope > 0 && envelope < 2048,
+      `response (${size}) must be the escaped row (${escapedRowChars}) plus a small envelope, got ${envelope}`
     );
+  });
+
+  test('the bound survives content that JSON escaping inflates', () => {
+    // The escape-density case the assertion above used to be blind to. Same
+    // tool, same claim, content that doubles under JSON.stringify.
+    const entity = 'project:fetch-escape-dense';
+    const dense = '"\n'.repeat(20_000); // every character escapes
+    let id: string;
+    return (async () => {
+      const written = await remember({ entity, content: dense });
+      id = written.observationId;
+      const result = getObservation({ observation_id: id });
+      assert.equal(result.observation!.content, dense, 'content must survive verbatim');
+
+      const size = wireSize(result);
+      const escapedRowChars = JSON.stringify(dense).length;
+      // CONTROL: this fixture must actually exercise inflation, or it is just
+      // another prose case wearing a different name.
+      assert.ok(
+        escapedRowChars > dense.length * 1.5,
+        `CONTROL: fixture must inflate under escaping (${dense.length} -> ${escapedRowChars})`
+      );
+      const envelope = size - escapedRowChars;
+      assert.ok(
+        envelope > 0 && envelope < 2048,
+        `envelope must stay small regardless of escape density, got ${envelope}`
+      );
+    })();
   });
 
   test('CONTROL: the recall re-read this replaces returns the whole entity, and misses at limit 1', async () => {
@@ -184,6 +221,9 @@ describe('get_observation performs no write', () => {
 
     const result = getObservation({ observation_id: written.observationId });
     const row = rowById(written.observationId);
+    // CONTROL: without this the assertions below compare 0 === 0 and prove
+    // nothing about disclosure the moment the query stops matching.
+    assert.ok(row.recall_count > 0, 'CONTROL: the recall above must have bumped the row');
     assert.equal(result.observation!.recall_count, row.recall_count);
     assert.equal(result.observation!.last_recalled_at, row.last_recalled_at);
     assert.match(result.message, /did not change recall_count/);
@@ -257,43 +297,80 @@ describe('get_observation discloses append-only rows', () => {
 // The workflow it actually completes — and the boundary it does not move
 // ---------------------------------------------------------------------------
 
-describe('get_observation resolves a near-match id end to end', () => {
-  test('an id from near_matches reads back the full row the preview truncates', async () => {
-    const entity = 'project:fetch-near-match';
-    const shared =
-      'Structural diagnosis of the deployment path, with the same opening section reused across notes. ';
+describe('the ids get_observation advertises are working handles', () => {
+  // The tool description names three id sources. An earlier version of this
+  // suite claimed to exercise `remember`'s `near_matches[].observation_id`,
+  // which DOES NOT EXIST on this branch — near_matches is
+  // `{content, similarity}` (src/mcp/tools/remember.ts). The test read
+  // `match.observation_id ?? first.observationId`, so it silently fell through
+  // to an id obtained the other way and passed while proving nothing, and the
+  // shipped tool description advertised the nonexistent field as fact. Both are
+  // fixed; these tests pin the sources that actually exist, one per format that
+  // actually emits an id.
+  const entity = 'project:fetch-id-sources';
 
-    const first = await remember({ entity, content: `${shared}The Vercel build bakes NEXT_PUBLIC vars at build time.` });
-    backdate(first.observationId, '2026-08-01');
-
-    const second = await remember({
-      entity,
-      content: `${shared}The Docker image mounts /data as the only writable volume.`,
-    });
-
-    const matches = second.near_matches ?? [];
-    assert.ok(matches.length > 0, 'PREMISE: the fixture must actually produce a near match');
-
-    // On this branch near_matches still carries full content (the preview cap
-    // lives on branch claude/zealous-bhaskara-725771). What is exercised here is
-    // the id being a working handle for a bounded read — the property that has
-    // to hold whichever side of that cap this lands on.
-    const match = matches[0] as { observation_id?: string; content: string };
-    const resolvedId = match.observation_id ?? first.observationId;
-
-    const fetched = getObservation({ observation_id: resolvedId });
+  test('an id from remember resolves', async () => {
+    const written = await remember({ entity, content: 'The session sweep runs on a 30-minute idle timer.' });
+    const fetched = getObservation({ observation_id: written.observationId });
     assert.equal(fetched.success, true);
-    assert.equal(fetched.observation!.observation_id, resolvedId);
-    assert.equal(fetched.observation!.content, rowById(resolvedId).content);
-    assert.equal(fetched.observation!.entity, entity);
+    assert.equal(fetched.observation!.content, 'The session sweep runs on a 30-minute idle timer.');
   });
 
-  test('BOUNDARY: reading two 45,000-char rows is possible; merging them is still capped at 50,000', async () => {
-    // This is what the fetch does and does not buy, pinned rather than argued.
-    // `merge`'s wire schema caps `content` at 50000 (src/mcp/server.ts), the
-    // same cap `remember` enforces — so two rows this size cannot be combined
-    // without discarding most of the source. The read is now available at any
-    // storable size; the merge is not, and no fetch tool changes that.
+  test('an id from recall format:full resolves', async () => {
+    await remember({ entity, content: 'Stale MCP sessions must answer 404, never 400.' });
+    const found = await recall({ query: 'stale MCP session status code', limit: 5, spread: false, format: 'full' });
+    const memories = (found as { memories: Array<{ observation_id: string; content: string }> }).memories;
+    assert.ok(memories.length > 0, 'PREMISE: recall must return something to take an id from');
+
+    const fetched = getObservation({ observation_id: memories[0].observation_id });
+    assert.equal(fetched.success, true, 'a recall id must be a working handle');
+    assert.equal(
+      fetched.observation!.content,
+      memories[0].content,
+      'the fetched row must be the row recall described'
+    );
+  });
+
+  test('an id from export format:json resolves', async () => {
+    const dump = exportMemories({ format: 'json', entity });
+    const parsed = JSON.parse(dump.data) as {
+      entities: Array<{ observations: Array<{ id: string; content: string }> }>;
+    };
+    const observations = parsed.entities.flatMap(e => e.observations);
+    assert.ok(observations.length > 0, 'PREMISE: export must emit observations with ids');
+
+    const fetched = getObservation({ observation_id: observations[0].id });
+    assert.equal(fetched.success, true, 'an export id must be a working handle');
+    assert.equal(fetched.observation!.content, observations[0].content);
+  });
+});
+
+describe('the boundary get_observation does NOT move', () => {
+  test('merge still caps combined content at 50,000 chars', async () => {
+    // D21 claims the honest consolidation boundary is "consolidate only when
+    // the combined text fits under 50,000". An earlier version of this test
+    // hardcoded `const MERGE_CONTENT_CAP = 50_000` and asserted two rows
+    // exceeded it — `merge` was never called and the cap never read, so
+    // widening `.max(50000)` to `.max(500000)` left the test green while the
+    // decision's load-bearing claim went false. Read the cap off the wire
+    // contract instead, which is the thing the claim is actually about.
+    const server = createMcpServer();
+    const handlers = (server.server as unknown as {
+      _requestHandlers: Map<string, (req: unknown, extra: unknown) => Promise<{ tools: Array<{ name: string; inputSchema?: { properties?: Record<string, { maxLength?: number }> } }> }>>;
+    })._requestHandlers;
+    const listed = await handlers.get('tools/list')!(
+      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+      {}
+    );
+    const mergeTool = listed.tools.find(t => t.name === 'merge');
+    assert.ok(mergeTool, 'merge must be advertised');
+    assert.equal(
+      mergeTool!.inputSchema?.properties?.content?.maxLength,
+      50_000,
+      'D21 cites 50,000 as the merge cap — if this changed, that decision needs revisiting'
+    );
+
+    // And the two-row reality the cap bites on: both readable, not combinable.
     const entity = 'raw:research:fetch-boundary';
     const a = await remember({ entity, content: ledgerPart(1) });
     backdate(a.observationId, '2026-08-10');
@@ -302,14 +379,13 @@ describe('get_observation resolves a near-match id end to end', () => {
 
     const readA = getObservation({ observation_id: a.observationId });
     const readB = getObservation({ observation_id: b.observationId });
-    assert.equal(readA.success, true);
+    assert.equal(readA.success, true, 'both rows are readable — that is what the tool buys');
     assert.equal(readB.success, true);
 
     const combined = readA.observation!.content.length + readB.observation!.content.length;
-    const MERGE_CONTENT_CAP = 50_000;
     assert.ok(
-      combined > MERGE_CONTENT_CAP,
-      `CONTROL: the two rows (${combined}) must exceed the merge cap, or this boundary is not being tested`
+      combined > 50_000,
+      `CONTROL: the two rows (${combined}) must exceed the cap, or this boundary is not being tested`
     );
   });
 });

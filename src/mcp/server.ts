@@ -596,7 +596,7 @@ export function createMcpServer(): McpServer {
 
   server.tool(
     'get_observation',
-    "Read ONE observation by its observation_id. The only id-taking tool that does not destroy anything: `forget` deletes a row and `merge` deletes every source row it is given, so use this first to see what an id actually addresses. Ids come from `remember` (`observationId`, and each `near_matches[].observation_id`, where the content beside them is only a 200-char preview), from `recall`, and from `export`. Bounded: exactly the one row named, never more than the 50000-char storage cap. This is a read — it leaves `recall_count` and `last_recalled_at` untouched, unlike `recall`.",
+    'Read ONE observation by its observation_id. The only id-taking tool that does not destroy anything: `forget` deletes a row and `merge` deletes every source row it is given, so use this first to see what an id actually addresses. Ids come from `remember` (as `observationId`), from `recall` with `format: "full"`, and from `export` with `format: "json"`. Bounded: exactly the one row named, and a row is capped at 50000 chars on write (JSON escaping can up to double that on the wire). This is a read — it leaves `recall_count` and `last_recalled_at` untouched, unlike `recall`.',
     {
       observation_id: z
         .string()

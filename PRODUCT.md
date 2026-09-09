@@ -99,6 +99,12 @@ remember(content, entity?, type?, source?, importance?, kind?)
     entities exempt), near-match detection, subspace novelty scoring via SVD.
     Returns version_hash, and replaced: true if the write deleted anything.
 
+get_observation(observation_id)
+  → Read ONE observation by id. The only id-taking tool that does not destroy
+    anything (forget deletes; merge deletes every source it is given), so it is
+    the look-before-you-act step. Bounded to the single row named. Performs no
+    write: recall_count and last_recalled_at are returned but never bumped.
+
 recall(query, limit?, type?, since?, kind?, spread?, format?)
   → Semantic + keyword search. 4 formats (full/compact/wire/index).
     Spreading activation follows relationships 1 hop. Reconsolidation
@@ -148,7 +154,7 @@ hippocampus/
 │   ├── index.ts              # Hono server, MCP Streamable HTTP transport
 │   ├── config.ts             # Environment config with Zod validation
 │   ├── mcp/
-│   │   ├── server.ts         # MCP server, tool + resource registration (11 tools)
+│   │   ├── server.ts         # MCP server, tool + resource registration (12 tools)
 │   │   ├── tools/            # One file per tool
 │   │   └── resources/        # MCP resources (proactive context injection)
 │   ├── db/

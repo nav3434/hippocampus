@@ -522,7 +522,7 @@ src/
 ├── index.ts              # Hono server, MCP Streamable HTTP transport
 ├── config.ts             # Environment config with Zod validation
 ├── mcp/
-│   ├── server.ts         # MCP tool registration (11 tools)
+│   ├── server.ts         # MCP tool registration (12 tools)
 │   └── tools/            # remember, recall, get_observation, forget, update, merge, merge_entities, context, consolidate, export, check_version, onboard
 ├── db/
 │   ├── index.ts          # SQLCipher initialization
