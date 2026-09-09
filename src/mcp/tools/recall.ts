@@ -41,10 +41,37 @@ interface MemoryResult {
   source: string | null;
   kind: string | null;
   remembered_at: string;
+  /**
+   * RAW cosine against the query, on EVERY path that computes one — the direct
+   * semantic search and the spreading-activation walk alike. It used to mean
+   * two different things in one response (D22): the direct path reported raw
+   * cosine while the spread path reported `sim * recallBoost * importance *
+   * SPREAD_DECAY` in the same field, so two rows of a single `spread: true`
+   * result were not comparable and the composite could exceed 1, which no
+   * cosine can. Ranking is done on a separate internal key, exactly as
+   * `semanticSearchWithVector` has always done it.
+   *
+   * Absent on keyword-fallback rows, where no vector comparison happened. That
+   * is the absence of a similarity, not a third meaning of one.
+   */
   similarity?: number;
   stale?: boolean;
   version_hash?: string | null;
 }
+
+/**
+ * A `MemoryResult` plus the key the merged set is ordered by — never returned.
+ * Stripped before the response is built, the same way `semanticSearchWithVector`
+ * keeps its composite off the rows it hands back.
+ *
+ * The scale is shared across every source so the merge is meaningful: the
+ * direct path contributes the search's own `rank_score`, the spread path the
+ * same composite damped by `SPREAD_DECAY`, and keyword rows a literal 0 (no
+ * vector was compared, so there is no score — they sort last, which is where
+ * the pre-D22 `?? 0` put them too, but now by statement rather than by the
+ * default value of a field whose meaning changed).
+ */
+type ScoredMemory = MemoryResult & { rank: number };
 
 /**
  * `degraded` is present on EVERY recall response, `false` on the healthy path,
@@ -117,6 +144,15 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
     type: input.type,
     since,
     kind: input.kind,
+    // The raw-similarity floor is pushed INTO the search so it applies before
+    // the sort-and-slice, rather than being applied to the rows that come back
+    // (D22). The search ranks by the boosted composite, so a row whose raw
+    // cosine is under this floor could out-rank a qualifying one, take one of
+    // the `limit` slots, and then be dropped by the filter below — `limit: 5`
+    // answering with 4 while a fifth qualifying row sat in the database, with
+    // nothing in the response to say so. Reachable on `recallBoost` alone, at
+    // the recall count of 100 CLAUDE.md uses as its own worked example.
+    minSimilarity: SIMILARITY_THRESHOLD,
   };
 
   let semanticResults: SemanticSearchResult[];
@@ -179,9 +215,13 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
 
   // Merge and deduplicate by observation ID
   const seen = new Set<string>();
-  const memories: MemoryResult[] = [];
+  const memories: ScoredMemory[] = [];
 
-  // Semantic results first (primary), filtered by threshold
+  // Semantic results first (primary). The threshold is now enforced inside the
+  // search (`minSimilarity` above), so this filter is a redundant guard rather
+  // than the mechanism — kept deliberately, so "recall never returns a semantic
+  // row below the floor" holds here whatever a future caller passes or a future
+  // search does, instead of resting on an argument two modules away.
   for (const r of semanticResults) {
     if (r.similarity < SIMILARITY_THRESHOLD) continue;
     if (!seen.has(r.observation_id)) {
@@ -195,15 +235,23 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
         kind: r.kind,
         remembered_at: r.created_at,
         similarity: Math.round(r.similarity * 1000) / 1000,
+        // The search's own composite, carried through unrounded. The spread
+        // re-sort below used to order these rows by raw cosine, silently
+        // discarding the boost the search had just ranked them by — so a
+        // heavily-recalled row was promoted by the search and demoted again by
+        // its caller, and only when `spread: true` (D22).
+        rank: r.rank_score,
       });
     }
   }
 
-  // Keyword results as fallback
+  // Keyword results as fallback. Rank 0: no vector was compared, so there is no
+  // score to place them by, and last is the honest position for a row that
+  // matched on a LIKE.
   for (const obs of keywordResults) {
     if (!seen.has(obs.id)) {
       seen.add(obs.id);
-      memories.push(formatObservation(obs));
+      memories.push({ ...formatObservation(obs), rank: 0 });
     }
   }
 
@@ -278,6 +326,14 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
           const importance = v.importance ?? 1.0;
           const score = sim * recallBoost * importance * SPREAD_DECAY;
 
+          // The INCLUSION bar stays on the damped score, unchanged (D22).
+          // `SPREAD_DECAY` is doing two jobs here — a rank penalty and an entry
+          // bar roughly twice as high as the direct path's — and only the first
+          // is what this change is about. Comparing raw `sim` to the threshold
+          // instead would admit a whole class of spread rows that are currently
+          // excluded, which is a decision about what `spread: true` returns, not
+          // about what a number in the response means. Left for whoever wants
+          // to make it deliberately.
           if (score >= SIMILARITY_THRESHOLD) {
             seen.add(v.observation_id);
             memories.push({
@@ -288,15 +344,27 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
               source: v.source,
               kind: v.kind,
               remembered_at: v.created_at,
-              similarity: Math.round(score * 1000) / 1000,
+              // Raw cosine, as on the direct path. This is the field that used
+              // to carry `score` — a composite, in the same key a sibling row
+              // filled with a plain cosine, and one that passes 1.0 outright
+              // once the multipliers do their job.
+              similarity: Math.round(sim * 1000) / 1000,
+              // ...while the damped composite keeps doing the ranking, so the
+              // decay still holds spread hits below direct ones. It just does
+              // it where a caller cannot mistake it for a similarity.
+              rank: score,
             });
           }
         }
       }
     }
 
-    // Re-sort all memories by similarity descending
-    memories.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
+    // Re-sort the merged set on the shared rank scale — the search's composite
+    // for direct hits, the same composite damped by SPREAD_DECAY for spread
+    // hits, 0 for keyword rows. Sorting on `similarity` here (raw cosine) would
+    // throw away both the boost the direct rows were ranked by and the damping
+    // that is the whole point of the decay.
+    memories.sort((a, b) => b.rank - a.rank);
   }
 
   // Reconsolidation hints: flag observations that may need updating
@@ -341,7 +409,12 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
     m.version_hash = versionCache.get(m.entity) ?? null;
   }
 
-  const limited = memories.slice(0, input.limit);
+  // Strip the internal rank key here, once, so every return path below is
+  // handed the wire shape and none of them can leak it — the same reason
+  // `semanticSearchWithVector` strips its composite at its own single exit.
+  const limited: MemoryResult[] = memories
+    .slice(0, input.limit)
+    .map(({ rank, ...rest }) => rest);
 
   // Track access for recall-frequency analysis
   if (limited.length > 0) {

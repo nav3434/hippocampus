@@ -18,6 +18,8 @@ const { exportMemories } = await import('../src/mcp/tools/export.js');
 const { searchObservations } = await import('../src/db/observations.js');
 const { findEntityByName, findOrCreateEntity } = await import('../src/db/entities.js');
 const { createRelationship } = await import('../src/db/relationships.js');
+const { generateEmbedding } = await import('../src/embeddings/embedder.js');
+const { cosineSimilarity } = await import('../src/embeddings/similarity.js');
 const { createObservation, getObservationsByEntity } = await import('../src/db/observations.js');
 const { listEntities } = await import('../src/db/entities.js');
 const { gatherEntityData, formatClaudeMd } = await import('../src/mcp/tools/export.js');
@@ -233,7 +235,16 @@ describe('Spreading activation', () => {
     assert.ok(projectObs.length >= 1, 'Spread should bring in related project observations');
   });
 
-  test('spread results have dampened similarity', async () => {
+  // Replaced in D22. This test used to be called "spread results have dampened
+  // similarity" and asserted `spreadMatch.similarity < directMatch.similarity`
+  // — which was true only because the spread path reported a DIFFERENT
+  // quantity in that field: the damped composite, against the direct path's raw
+  // cosine. Once both report raw cosine the old assertion still passes on this
+  // fixture, by coincidence rather than by mechanism, so it is replaced rather
+  // than deleted. The contract it should have been pinning is below; the decay
+  // is pinned as a RANKING effect in tests/recall-scoring.test.ts, where the
+  // fixture is built so the decay is what decides the order.
+  test('spread results report raw cosine, like every other path', async () => {
     const result = await recall({
       query: 'atmospheric physics research',
       type: 'person',
@@ -249,11 +260,21 @@ describe('Spreading activation', () => {
 
     assert.ok(directMatch, 'Should have a direct match');
     assert.ok(spreadMatch, 'Should have a spread match');
-    // Spread results get 0.5x decay, so should have lower similarity
-    assert.ok(
-      spreadMatch.similarity < directMatch.similarity,
-      `Spread result (${spreadMatch.similarity}) should be lower than direct match (${directMatch.similarity})`
+
+    const queryVector = await generateEmbedding('atmospheric physics research');
+    const spreadVector = await generateEmbedding(
+      'Atmospheric measurement systems and physics sensor calibration tools'
     );
+    const rawCosine = Math.round(cosineSimilarity(queryVector, spreadVector) * 1000) / 1000;
+
+    assert.equal(
+      spreadMatch.similarity,
+      rawCosine,
+      'spread rows must report the raw cosine, not the damped composite'
+    );
+    // The old value, for contrast: had this still been the composite, the
+    // assertion above would have failed. 0.5 decay alone puts it well clear.
+    assert.notEqual(spreadMatch.similarity, Math.round(rawCosine * 0.5 * 1000) / 1000);
   });
 
   test('spread: false is the default', async () => {

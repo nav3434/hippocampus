@@ -136,12 +136,44 @@ export interface SemanticSearchResult {
   source: string | null;
   kind: string | null;
   created_at: string;
+  /**
+   * RAW cosine between the query vector and the stored vector. Bounded by
+   * [-1, 1] and comparable across rows, which is what makes it the only thing
+   * safe to report to a caller. It is deliberately NOT what this function
+   * ranks by — see `rank_score`.
+   */
   similarity: number;
+  /**
+   * The decay-weighted composite this function sorts by:
+   * `similarity * recallBoost * importance`. UNBOUNDED above — `recallBoost` is
+   * `1 + 0.1 * ln(1 + recall_count)` with no cap and `importance` reaches
+   * `IMPORTANCE_MAX`, so this routinely exceeds 1 and is meaningless as a
+   * "similarity". It exists so a caller that MERGES these rows with rows scored
+   * some other way (recall's spreading-activation path) can re-sort the merged
+   * set on the same scale the search itself used. Anything that reaches a
+   * caller's caller should carry `similarity`, never this.
+   */
+  rank_score: number;
 }
 
 export interface SemanticSearchOptions {
   limit?: number;
   type?: string;
+  /**
+   * Lower bound on RAW cosine similarity, applied BEFORE the sort-and-slice.
+   *
+   * Without it, a caller that slices to `limit` here and then applies its own
+   * raw-similarity floor gets fewer rows than it asked for, silently: this
+   * function ranks by `rank_score`, so a row whose raw cosine is under the
+   * caller's floor can still out-rank a qualifying one, occupy a slot, and
+   * then be dropped by the caller. The slot is not given back. Filtering here
+   * is exact rather than a guessed over-fetch factor, and it is free — every
+   * row is already loaded and scored in memory before the slice, so the floor
+   * costs one comparison per row and nothing else.
+   *
+   * Omit it to rank the whole set (the pre-existing behaviour).
+   */
+  minSimilarity?: number;
   /**
    * Lower bound on `created_at`, **already normalized** to the stored UTC form
    * `YYYY-MM-DD HH:MM:SS` — the comparison below is lexicographic, so any other
@@ -231,7 +263,7 @@ export function semanticSearchWithVector(
     const similarity = cosineSimilarity(queryVector, storedVector);
     const recallBoost = 1 + ALPHA * Math.log(1 + (row.recall_count ?? 0));
     const importance = row.importance ?? 1.0;
-    const finalScore = similarity * recallBoost * importance;
+    const rank_score = similarity * recallBoost * importance;
     return {
       observation_id: row.observation_id,
       entity_id: row.entity_id,
@@ -241,14 +273,21 @@ export function semanticSearchWithVector(
       source: row.source,
       kind: row.kind,
       created_at: row.created_at,
-      similarity, // raw cosine, for display
-      finalScore, // used for ranking only
+      similarity, // raw cosine, for display and for `minSimilarity`
+      rank_score, // boosted composite, for ranking only — see the interface
     };
   });
 
-  scored.sort((a, b) => b.finalScore - a.finalScore);
-  // Strip finalScore from results — internal ranking detail
-  return scored.slice(0, limit).map(({ finalScore, ...rest }) => rest);
+  // The floor is on RAW cosine and is applied BEFORE the sort-and-slice, so a
+  // boosted row that does not clear it never competes for one of the `limit`
+  // slots. Applying it after the slice — which is what a caller filtering the
+  // returned rows does — is what loses results.
+  const eligible = options?.minSimilarity === undefined
+    ? scored
+    : scored.filter(r => r.similarity >= options.minSimilarity!);
+
+  eligible.sort((a, b) => b.rank_score - a.rank_score);
+  return eligible.slice(0, limit);
 }
 
 export function deleteEmbedding(observationId: string): boolean {

@@ -58,7 +58,19 @@ export async function context(input: ContextInput): Promise<ContextResult> {
     // have found it never ran. `recall` can honestly degrade because it still
     // has keyword hits; here the degraded answer IS the misleading one.
     const SEMANTIC_THRESHOLD = 0.2;
-    const semanticResults = await semanticSearch(input.topic, { limit: 5 });
+    // The floor goes INTO the search, not onto the row it returns (D22). This
+    // reads only `[0]`, and the search ranks by the boosted composite, so a row
+    // under the floor could hold position 0 on its recall count alone and make
+    // this branch answer "No entity found" while a qualifying entity sat at
+    // [1]. Reproduced on a two-row fixture: raw 0.202 vs 0.143, a recall count
+    // of 100 on the lower one, and the topic stopped resolving. Same shape as
+    // the `recall` half of D22 and the same one-argument fix; worth stating
+    // that it is not merely defensive here, because the loss is total — this is
+    // the last leg of exact -> LIKE -> semantic, so a miss is the whole answer.
+    const semanticResults = await semanticSearch(input.topic, {
+      limit: 5,
+      minSimilarity: SEMANTIC_THRESHOLD,
+    });
     if (semanticResults.length > 0 && semanticResults[0].similarity >= SEMANTIC_THRESHOLD) {
       entity = findEntityById(semanticResults[0].entity_id) ?? undefined;
     }
