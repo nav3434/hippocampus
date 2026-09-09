@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { findOrCreateEntity, findEntityById, listEntities, type Entity } from '../../db/entities.js';
-import { createObservation, deleteObservation, getObservationsByEntityAndKind } from '../../db/observations.js';
+import { createObservation, deleteObservation, getObservationsByEntityAndKind, IMPORTANCE_MAX, IMPORTANCE_MIN, IMPORTANCE_NEUTRAL } from '../../db/observations.js';
 import { createRelationship, relationshipExists } from '../../db/relationships.js';
 import { generateEmbedding, storeEmbedding, getEmbeddingsByEntity, deleteEmbedding } from '../../embeddings/embedder.js';
 import { cosineSimilarity } from '../../embeddings/similarity.js';
@@ -33,7 +33,7 @@ export const rememberSchema = z.object({
     .transform(s => s?.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')),
   type: z.string().max(50).optional(),
   source: z.string().max(100).optional(),
-  importance: z.number().min(0).max(1).optional(),
+  importance: z.number().min(IMPORTANCE_MIN).max(IMPORTANCE_MAX).optional(),
   kind: z.string().min(1).max(50).optional(),
   replace_kind: z.boolean().optional(),
 });
@@ -143,7 +143,7 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
     }
 
     const vector = await generateEmbedding(input.content);
-    const observation = createObservation(entity.id, input.content, input.source, input.importance ?? 1.0, input.kind);
+    const observation = createObservation(entity.id, input.content, input.source, input.importance ?? IMPORTANCE_NEUTRAL, input.kind);
     storeEmbedding(entity.id, observation.id, vector, input.content);
 
     const relationshipsCreated = detectAndCreateRelationships(entity, input.content);
@@ -311,7 +311,7 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
   }
 
   // No duplicate found — proceed normally
-  const observation = createObservation(entity.id, input.content, input.source, input.importance ?? 1.0, input.kind);
+  const observation = createObservation(entity.id, input.content, input.source, input.importance ?? IMPORTANCE_NEUTRAL, input.kind);
   storeEmbedding(entity.id, observation.id, vector, input.content);
 
   const relationshipsCreated = detectAndCreateRelationships(entity, input.content);

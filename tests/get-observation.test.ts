@@ -1,5 +1,5 @@
 /**
- * Tests for `get_observation` — the bounded read-by-id (D21).
+ * Tests for `get_observation` — the bounded read-by-id (D22).
  *
  * The gap: observation ids are handed out by `remember`, `recall` and `export`,
  * and both tools that ACCEPT an id destroy rows (`forget` deletes; `merge`
@@ -31,9 +31,10 @@ const { recall } = await import('../src/mcp/tools/recall.js');
 const { forget } = await import('../src/mcp/tools/forget.js');
 const { getObservation } = await import('../src/mcp/tools/get-observation.js');
 const { findEntityByName } = await import('../src/db/entities.js');
-const { getObservationsByEntity, getObservationsByIds } = await import('../src/db/observations.js');
+const { getObservationsByEntity, getObservationsByIds, createObservation } = await import('../src/db/observations.js');
 const { exportMemories } = await import('../src/mcp/tools/export.js');
 const { createMcpServer } = await import('../src/mcp/server.js');
+const { onboard } = await import('../src/mcp/tools/onboard.js');
 
 before(() => {
   initDatabase();
@@ -120,7 +121,7 @@ describe('get_observation is bounded where the prescribed recall re-read is not'
     // backslashes. (An earlier draft of this comment called the 1.20x stress
     // input "what a real harvest entry actually is", which is an order of
     // magnitude out — it was corrected in DECISIONS.md and the tool's own doc
-    // and survived here, which is why D21 says to sweep the whole surface.)
+    // and survived here, which is why D22 says to sweep the whole surface.)
     // The real claim is "the row it was asked for, plus a small fixed
     // envelope", and escaping belongs to the row.
     const size = wireSize(result);
@@ -357,7 +358,7 @@ describe('the ids get_observation advertises are working handles', () => {
 
 describe('the boundary get_observation does NOT move', () => {
   test('merge still caps combined content at 50,000 chars', async () => {
-    // D21 claims the honest consolidation boundary is "consolidate only when
+    // D22 claims the honest consolidation boundary is "consolidate only when
     // the combined text fits under 50,000". An earlier version of this test
     // hardcoded `const MERGE_CONTENT_CAP = 50_000` and asserted two rows
     // exceeded it — `merge` was never called and the cap never read, so
@@ -377,7 +378,7 @@ describe('the boundary get_observation does NOT move', () => {
     assert.equal(
       mergeTool!.inputSchema?.properties?.content?.maxLength,
       50_000,
-      'D21 cites 50,000 as the merge cap — if this changed, that decision needs revisiting'
+      'D22 cites 50,000 as the merge cap — if this changed, that decision needs revisiting'
     );
 
     // And the two-row reality the cap bites on: both readable, not combinable.
@@ -570,5 +571,72 @@ describe('the preview notice never names a fetch the caller cannot perform', () 
       'a message with no id in the payload must not prescribe a fetch by id'
     );
     assert.match(second.message, /Do NOT consolidate/, 'it says the useful thing instead');
+  });
+});
+
+describe('the deduplicated path hands back a row the caller has never seen', () => {
+  test('observationId names a pre-existing observation, and onboard says so', async () => {
+    // The hazard a merge-gate review found. On `deduplicated: true`, remember
+    // returns the PRE-EXISTING row's id (remember.ts, the skip branch) — the
+    // caller's own text was never stored. onboard step 2 templates
+    // `merge([<this response's observationId>, <near match id>], content)`, so a
+    // model composing `content` from what it submitted deletes whatever was
+    // unique to the stored row, with success: true at every step. That is the
+    // D10 shape: a report authorising a destruction whose target is unseen.
+    //
+    // Thresholds are not guessable, so this pair was probed with
+    // generateEmbedding + cosineSimilarity first: it measures 0.864, over the
+    // 0.85 dedup line, with the stored row longer.
+    const entity = 'project:dedup-handle-guard';
+    const submitted = 'Runbook: push to origin main, then pull and rebuild on the box, then verify the health endpoint.';
+    const stored = `${submitted} Volume preserved.`;
+
+    const first = await remember({ entity, content: stored });
+    const second = await remember({ entity, content: submitted });
+
+    // CONTROL: the fixture must actually reach the dedup-skip branch. If the
+    // embedding model drifts below 0.85 this becomes an ordinary write and every
+    // assertion below would pass vacuously against a different code path.
+    assert.equal(second.deduplicated, true, 'CONTROL: fixture must take the dedup-skip branch');
+
+    assert.equal(
+      second.observationId,
+      first.observationId,
+      'the returned id is the pre-existing row, not the text just submitted'
+    );
+
+    // The point of the tool: that id is now readable, so "unseen" is a choice.
+    const fetched = getObservation({ observation_id: second.observationId });
+    assert.equal(fetched.success, true);
+    assert.ok(
+      fetched.observation!.content.includes('Volume preserved'),
+      'and it holds text the caller never sent — which is exactly what merge would delete'
+    );
+    assert.ok(!submitted.includes('Volume preserved'), 'CONTROL: that text really was not submitted');
+
+    // The prompt must warn about it, or the tool being able to read the row
+    // does not help a model that never learns it needs to. Step 4 lives in the
+    // ONGOING prompt, which onboard serves at BOOTSTRAP_THRESHOLD observations
+    // and above — so seed past it rather than asserting against the bootstrap
+    // text, where the consolidation sequence does not exist at all.
+    const filler = findEntityByName(entity)!;
+    for (let i = 0; i < 60; i++) {
+      createObservation(filler.id, `Filler observation ${i}: distinct content for the onboard mode threshold.`);
+    }
+    const onboarded = onboard({}) as { instructions: string; observation_count: number };
+    const prompt = onboarded.instructions;
+    // CONTROL: prove we are reading the ongoing prompt, not the bootstrap one —
+    // step 4 does not exist in the bootstrap text, so without this the two
+    // assertions below could fail for the wrong reason (or a reworded bootstrap
+    // could one day pass them). NB the field is `instructions`; `.prompt` is
+    // undefined and typechecks clean, because a dynamic import lands untyped.
+    assert.ok(onboarded.observation_count >= 50, 'CONTROL: must be past BOOTSTRAP_THRESHOLD');
+    assert.match(prompt, /established Hippocampus memory store/, 'CONTROL: must be the ongoing prompt');
+    assert.match(prompt, /deduplicated: true/, 'onboard must name the path');
+    assert.match(
+      prompt,
+      /re-read EVERY id you will pass to `merge`/,
+      'onboard must tell the model to read every merge source, not only the near match'
+    );
   });
 });

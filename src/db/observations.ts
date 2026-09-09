@@ -3,6 +3,30 @@ import { getDatabase } from './index.js';
 import { updateEntityTimestamp } from './entities.js';
 import { assertStoredSinceBound } from './timestamps.js';
 
+/**
+ * `importance` is a per-observation multiplier on recall ranking
+ * (`similarity * recallBoost * importance`, see `semanticSearchWithVector`).
+ *
+ * 1.0 is the NEUTRAL point, not the ceiling. Values below it de-prioritise;
+ * values above it boost. The range used to stop at 1.0, which made the neutral
+ * default the maximum and left the parameter unable to do the one thing its own
+ * description promised — "use for facts that should always surface" — while
+ * `onboard` told callers to pass 1.5-2.0 and had every such write rejected (D21).
+ *
+ * The ceiling is bounded rather than open: at 2.0 a maximally-boosted
+ * observation outranks a neutral one only when its raw similarity is more than
+ * half the neutral one's, so a boost reorders results without letting one
+ * observation dominate every recall.
+ *
+ * Any change here is a client-visible contract change. The bounds are exported
+ * so the zod schemas, the tool descriptions and the `onboard` prompts all read
+ * the same numbers; `tests/importance-range.test.ts` pins the prompt text
+ * against the bounds `tools/list` actually advertises.
+ */
+export const IMPORTANCE_MIN = 0;
+export const IMPORTANCE_NEUTRAL = 1.0;
+export const IMPORTANCE_MAX = 2;
+
 export interface Observation {
   id: string;
   entity_id: string;
@@ -24,7 +48,7 @@ export function createObservation(
   entityId: string,
   content: string,
   source?: string,
-  importance: number = 1.0,
+  importance: number = IMPORTANCE_NEUTRAL,
   kind?: string
 ): Observation {
   const db = getDatabase();

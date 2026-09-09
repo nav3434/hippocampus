@@ -77,7 +77,7 @@ entities (id, name, type, created_at, updated_at, version_hash, version_at)
 
 -- Observations: facts about entities
 -- kind: fact, decision, question, preference (or custom). Filterable.
--- importance: manual boost (0.0-1.0) for always-relevant facts
+-- importance: manual boost (0.0-2.0, 1.0 neutral) for always-relevant facts
 -- recall tracking: last_recalled_at + recall_count for decay-weighted retrieval
 observations (id, entity_id, content, source, kind, importance, created_at,
              last_recalled_at, recall_count)
