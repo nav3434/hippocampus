@@ -8,8 +8,11 @@
  * a 115,271-char response, both rejected by the MCP client for exceeding its
  * token cap. Both writes had SUCCEEDED — parsing the persisted bodies showed
  * `success: true`, `replaced: false` and a fresh `observationId` each time — but
- * the caller saw only an error string, and the natural remedy for an error is a
- * retry, which double-writes.
+ * the caller saw only an error string, with nothing to distinguish a rejected
+ * response from a rejected write. Both remedies are wrong: a retry re-stores the
+ * memory wherever dedup cannot absorb it (an append-only entity, a UTC-midnight
+ * crossing, a rephrased or longer retry), and abandoning it discards a write
+ * that had landed.
  *
  * The fix is previews plus an `observation_id` on every entity. The tests below
  * pin the budget, and each one carries a positive control: a bound that a fixture
@@ -122,6 +125,15 @@ function assertPreviewedAndControlled(
     assert.ok(
       row!.content.length > RESPONSE_BUDGET_BYTES,
       `control: the quoted row (${row!.content.length}) must exceed the budget`
+    );
+    // The preview's job is to identify WHICH overlap this is, so it has to be
+    // the head of the row its id addresses. Every other assertion here — the
+    // length cap, the budget, "not equal to the stored text" — passes just as
+    // well on a constant like "[withheld]", which would identify nothing.
+    assert.equal(
+      match.content,
+      `${row!.content.slice(0, 200)}…`,
+      'the preview must be the head of the observation it points at'
     );
   }
 }
