@@ -423,6 +423,8 @@ When `remember` stores a new observation, it reports existing observations that 
 
 `near_matches` also carries any match above 0.85 that the dedup guards held back — an append-only entity, or an observation from a different UTC day (see [Append-safe writes](#append-safe-writes)). Overlap that isn't acted on is still overlap worth seeing.
 
+Each match is a 200-char **preview** plus, off append-only entities, the `observation_id` that addresses it. The preview is a bound on the response, not on what you can do: quoting three overlapping observations in full could push a *successful* write past a client's token cap, and a caller that sees only a size error is one retry away from storing the memory twice. To consolidate, re-read the near match with `recall` (which returns `observation_id` alongside full content) and then `merge` it with the observation this response just stored — `merge` keeps only the content you pass it, so merging on the preview alone would discard the rest. Append-only entities carry no `observation_id` on purpose: an id is a deletion key, and their whole point is that nothing consolidates them.
+
 ### Append-safe writes
 
 Dedup on write is destructive: a >= 0.85 match whose stored content is shorter is deleted and replaced. That is right for a fact being restated with more detail, and wrong for a log — two dated entries sharing a template can clear 0.85 on the template alone. Two guards bound it:

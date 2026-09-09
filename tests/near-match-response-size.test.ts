@@ -66,6 +66,24 @@ function wireSize(result: unknown): number {
 }
 
 /**
+ * The budget covers the OVERLAP report, not the DESTRUCTION report.
+ *
+ * `replaced_observation` and `replaced_observations` quote rows that have been
+ * deleted, so the response is their only copy and capping them would defeat the
+ * recoverability they exist for. They are deliberately uncapped, which means a
+ * `replaced: true` response can legitimately be large — that is not the defect
+ * D20 fixes, and the mitigation there is the persisted-body check in CLAUDE.md,
+ * not a smaller payload. Strip them before measuring, or this asserts the
+ * opposite of the decision.
+ */
+function wireSizeOfOverlapReport(result: Record<string, unknown>): number {
+  const { replaced_observation, replaced_observations, ...rest } = result;
+  void replaced_observation;
+  void replaced_observations;
+  return wireSize(rest);
+}
+
+/**
  * Every part shares a header, which is what carries them over the near-match
  * threshold — the same way real harvest entries clear it on a shared skeleton
  * rather than on shared substance. The bulk after it is distinct per part.
@@ -84,6 +102,28 @@ function backdateObservation(observationId: string, day: string): void {
   getDatabase()
     .prepare("UPDATE observations SET created_at = ? || ' 12:00:00' WHERE id = ?")
     .run(day, observationId);
+}
+
+/**
+ * Every previewed near match, plus the control that keeps the assertion honest:
+ * the row the id addresses must be big enough that echoing it would have blown
+ * the budget. Without it a fixture shrunk below 201 chars passes while proving
+ * nothing — the vacuous-guard failure this repo has already had three times.
+ */
+function assertPreviewedAndControlled(
+  result: { near_matches?: Array<{ content: string; observation_id?: string }> },
+  entityName: string
+): void {
+  const stored = observationsFor(entityName);
+  for (const match of result.near_matches ?? []) {
+    assert.ok(match.content.length <= 201, 'each near match is a preview');
+    const row = stored.find(o => o.id === match.observation_id);
+    assert.ok(row, 'observation_id must address a real row');
+    assert.ok(
+      row!.content.length > RESPONSE_BUDGET_BYTES,
+      `control: the quoted row (${row!.content.length}) must exceed the budget`
+    );
+  }
 }
 
 function observationsFor(entityName: string) {
@@ -155,23 +195,110 @@ describe('a successful remember response stays inside a token budget', () => {
 
     assert.equal(result.deduplicated, true, 'must be on the skip path');
     assert.ok(result.near_matches?.length, 'the out-of-day overlap must still be reported');
-    for (const match of result.near_matches!) {
-      assert.ok(match.content.length <= 201, 'each near match is a preview');
-    }
+    assertPreviewedAndControlled(result, entity);
     assert.ok(
       wireSize(result) <= RESPONSE_BUDGET_BYTES,
       `deduplicated response was ${wireSize(result)} bytes`
     );
   });
+
+  test('the replaced path previews too', async () => {
+    // The third return, and the one no assertion reached before: re-pointing
+    // ONLY this branch back at the uncapped array left all 340 tests green
+    // while the response went to ~90KB, with a 45,000-char near match in it.
+    // The replace branch is also the one that just DELETED something, so it is
+    // the worst place to lose the bound.
+    const entity = 'raw:research:ledger-replace';
+
+    const older = await remember({ entity, content: ledgerPart(1) });
+    backdateObservation(older.observationId, '2026-09-01');
+
+    // Same day, and shorter than what follows → the dedup REPLACE branch.
+    const victim = ledgerPart(2).slice(0, OBSERVATION_CHARS - 500);
+    await remember({ entity, content: victim });
+    const result = await remember({ entity, content: ledgerPart(2) });
+
+    assert.equal(result.replaced, true, 'must be on the replace path');
+    assert.ok(result.near_matches?.length, 'the out-of-day overlap must still be reported');
+    assertPreviewedAndControlled(result, entity);
+    const overlapBytes = wireSizeOfOverlapReport(result as unknown as Record<string, unknown>);
+    assert.ok(
+      overlapBytes <= RESPONSE_BUDGET_BYTES,
+      `replaced response's overlap report was ${overlapBytes} bytes`
+    );
+
+    // Criterion 4, and the asymmetry stated as an assertion rather than a
+    // comment: the DESTRUCTION disclosure is NOT capped, so the full response
+    // is legitimately over the budget while the overlap report inside it is
+    // not. If a later change ever caps replaced_observation, this fails and
+    // sends the reader to the decision rather than to a mystery.
+    assert.equal(result.replaced_observation, victim, 'the evicted text stays whole');
+    assert.ok(
+      wireSize(result) > RESPONSE_BUDGET_BYTES,
+      'the uncapped destruction disclosure is what makes this response large'
+    );
+  });
+});
+
+describe('every path that attaches near_matches says it is a preview', () => {
+  test('the no-match, deduplicated and replaced messages all disclose it', async () => {
+    // The field used to hold the full stored text. A caller that cannot tell it
+    // now holds a truncated one will compose a replacement from it and destroy
+    // the remainder — so the disclosure has to ride on all three returns, not
+    // just the one where it was easiest to add. Nothing else in this file
+    // asserts the message wording, so without this the whole clause could be
+    // deleted with the suite still green.
+    // One entity per path. Sharing one would make the paths interfere: every
+    // ledgerPart is padded to the same length, so a same-day sibling left over
+    // from the previous step becomes the best match at equal length and sends
+    // the write down the SKIP branch instead of the replace branch.
+    const seed = async (entity: string) => {
+      const older = await remember({ entity, content: ledgerPart(1) });
+      backdateObservation(older.observationId, '2026-09-01');
+    };
+
+    await seed('raw:research:disclosure-nomatch');
+    const noMatch = await remember({ entity: 'raw:research:disclosure-nomatch', content: ledgerPart(2) });
+    assert.ok(noMatch.near_matches?.length);
+    assert.equal(noMatch.replaced, false);
+    assert.match(noMatch.message, /PREVIEW, not the stored text/);
+    // It must NOT hand over a copy-pasteable merge recipe: this message fires on
+    // every overlap >= 0.5 whatever the novelty, and `merge` keeps only the
+    // content it is given, which this response no longer carries.
+    assert.doesNotMatch(noMatch.message, /merge\(/);
+
+    await seed('raw:research:disclosure-replaced');
+    const victim = ledgerPart(2).slice(0, OBSERVATION_CHARS - 500);
+    await remember({ entity: 'raw:research:disclosure-replaced', content: victim });
+    const replaced = await remember({ entity: 'raw:research:disclosure-replaced', content: ledgerPart(2) });
+    assert.equal(replaced.replaced, true, 'fixture must reach the replace branch');
+    assert.ok(replaced.near_matches?.length);
+    assert.match(replaced.message, /preview, not the stored text/);
+
+    await seed('raw:research:disclosure-deduped');
+    await remember({ entity: 'raw:research:disclosure-deduped', content: ledgerPart(2) });
+    const deduped = await remember({
+      entity: 'raw:research:disclosure-deduped',
+      content: ledgerPart(2).slice(0, OBSERVATION_CHARS - 500),
+    });
+    assert.equal(deduped.deduplicated, true, 'fixture must reach the skip branch');
+    assert.ok(deduped.near_matches?.length);
+    assert.match(deduped.message, /preview, not the stored text/);
+  });
 });
 
 describe('observation_id is the handle the preview replaces', () => {
   test('a reported near match can still be consolidated, by id', async () => {
-    // The capability the full text used to provide. `merge` takes ids and
-    // requires at least two of them — satisfied by this response's own
-    // `observationId` plus the near match's, with no new tool and no need for
-    // the stored text. This is the conformance evidence for "previews are not
-    // lossy off the log entities".
+    // The capability the full text used to provide: `merge` requires at least
+    // two ids, satisfied by this response's own `observationId` plus the near
+    // match's, with no new tool.
+    //
+    // What this proves is the MECHANICS — the two handles address distinct real
+    // rows and `merge` accepts them. It is deliberately not a safety claim.
+    // `merge` keeps only the `content` passed to it, so a caller that composed
+    // that text from the 200-char preview would destroy the rest, which is why
+    // `onboard` step 4 makes re-reading the near match step 1 and merging step
+    // 2. The id is the handle; it is not, on its own, the workflow.
     const entity = 'project:consolidate-by-id';
 
     const older = await remember({ entity, content: ledgerPart(1) });

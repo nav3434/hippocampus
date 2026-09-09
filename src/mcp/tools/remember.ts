@@ -12,6 +12,14 @@ const NEAR_MATCH_THRESHOLD = 0.5;
 const MAX_NEAR_MATCHES = 3;
 const NEAR_MATCH_PREVIEW_CHARS = 200;
 
+/**
+ * Attached wherever `near_matches` rides along on a message that is about
+ * something else. The field used to hold the full stored text; a caller that
+ * cannot tell it now holds a truncated one will compose a replacement from it.
+ */
+const PREVIEW_NOTICE =
+  `. near_matches[].content is a ${NEAR_MATCH_PREVIEW_CHARS}-char preview, not the stored text — re-read the observation by its observation_id before acting on it`;
+
 export const rememberSchema = z.object({
   content: z
     .string()
@@ -223,7 +231,9 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
         entityName: entity.name,
         observationId: match.observation_id,
         relationships_created: [],
-        message: `Deduplicated: similar observation already exists for "${entity.name}" (similarity: ${bestMatch.similarity.toFixed(3)}, same UTC day)`,
+        message:
+          `Deduplicated: similar observation already exists for "${entity.name}" (similarity: ${bestMatch.similarity.toFixed(3)}, same UTC day)` +
+          (reportedMatches.length > 0 ? PREVIEW_NOTICE : ''),
         version_hash: current?.version_hash,
         deduplicated: true,
         replaced: false,
@@ -261,7 +271,9 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
       entityName: entity.name,
       observationId: observation.id,
       relationships_created: relationshipsCreated,
-      message: `Replaced shorter duplicate for "${entity.name}" (similarity: ${bestMatch.similarity.toFixed(3)}, same UTC day). DELETED the previous observation — its full text is in replaced_observation`,
+      message:
+        `Replaced shorter duplicate for "${entity.name}" (similarity: ${bestMatch.similarity.toFixed(3)}, same UTC day). DELETED the previous observation — its full text is in replaced_observation` +
+        (reportedMatches.length > 0 ? PREVIEW_NOTICE : ''),
       version_hash: updated?.version_hash,
       replaced: true,
       replaced_observation: replacedContent,
@@ -312,7 +324,7 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
       .join(', ');
     result.message += appendOnly
       ? `. ${reportedMatches.length} earlier entr${reportedMatches.length === 1 ? 'y overlaps' : 'ies overlap'} — expected here, since every write is a separate dated record sharing a format. Do NOT consolidate, update or merge them (previews only): ${listed}`
-      : `. These existing observations overlap — consider consolidating (nothing was deleted). near_matches[].content is a preview, not the stored text: consolidate with merge({observation_ids: [this response's observationId, the near match's observation_id], content: ...}): ${listed}`;
+      : `. These existing observations overlap — consider consolidating (nothing was deleted). near_matches[].content is a ${NEAR_MATCH_PREVIEW_CHARS}-char PREVIEW, not the stored text: address the full observation by its observation_id, and re-read it before composing anything that replaces it: ${listed}`;
   }
 
   return result;
