@@ -58,29 +58,28 @@ export async function context(input: ContextInput): Promise<ContextResult> {
     // have found it never ran. `recall` can honestly degrade because it still
     // has keyword hits; here the degraded answer IS the misleading one.
     //
-    // Resolve on RAW similarity, not on the position the search returned.
-    // `semanticSearch` orders by `similarity * recallBoost * importance` — a
-    // relevance ranking, which is the wrong question for "which entity did the
-    // caller mean". The threshold below is expressed in raw-cosine terms, so
-    // reading index 0 gates ONE row's cosine against a position a DIFFERENT row
-    // earned through weighting: a boosted or frequently-recalled row can hold
-    // index 0 with a cosine under the bar while a genuine match sits at index 1,
-    // and this returns `No entity found` — the exact false negative the comment
-    // above exists to prevent, arrived at from the other side. Reachable before
-    // D21 by demotion (importance < 1 pushing the real match down); D21's
-    // ceiling of 2.0 added the promotion direction, which is the commoner shape
-    // now that `onboard` successfully writes identity facts at 1.5-2.0.
+    // Ordered by RAW similarity, not by the relevance ranking. The default
+    // ordering is `similarity * recallBoost * importance`, which answers "how
+    // relevant is this" — the wrong question for "which entity did the caller
+    // mean" — while the threshold below is expressed in raw-cosine terms.
+    // Reading a score-ordered list gates ONE row's cosine against a position a
+    // DIFFERENT row earned through weighting: a boosted or frequently-recalled
+    // row takes the top with a cosine under the bar while a genuine match sits
+    // below it, and this returns `No entity found` — the exact false negative
+    // the comment above exists to prevent, arrived at from the other side.
+    // Reachable before D21 by demotion (importance < 1 pushing the real match
+    // down); D21's ceiling of 2.0 added the promotion direction, which is the
+    // commoner shape now that `onboard` successfully writes identity facts at
+    // 1.5-2.0.
     //
-    // The limit is 20 rather than 5 for the same reason: the search scores every
-    // row and only the slice is bounded, so a wider slice costs nothing and
-    // leaves far less room for a weighted row to displace the raw-best match
-    // before this code ever sees it.
+    // `orderBy` rather than re-picking the maximum from the returned array: the
+    // slice happens inside the search and is final, so re-picking still chooses
+    // from a window that weighting selected. With enough boosted rows the real
+    // match is dropped before this code sees it — which is what the first
+    // version of this fix did, and it looked correct.
     const SEMANTIC_THRESHOLD = 0.2;
-    const semanticResults = await semanticSearch(input.topic, { limit: 20 });
-    const bestMatch = semanticResults.reduce<(typeof semanticResults)[number] | undefined>(
-      (best, candidate) => (best && best.similarity >= candidate.similarity ? best : candidate),
-      undefined
-    );
+    const semanticResults = await semanticSearch(input.topic, { limit: 5, orderBy: 'similarity' });
+    const bestMatch = semanticResults[0];
     if (bestMatch && bestMatch.similarity >= SEMANTIC_THRESHOLD) {
       entity = findEntityById(bestMatch.entity_id) ?? undefined;
     }

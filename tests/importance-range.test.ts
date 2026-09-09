@@ -112,12 +112,23 @@ async function advertisedImportanceBounds(): Promise<{ minimum: number; maximum:
  * That is the safe direction — it fails loudly at edit time, in a repo whose
  * recurring injury is the opposite (a check that quietly passes while measuring
  * nothing), and the fix is one line break.
+ *
+ * A leading minus is part of the number, so `importance: -1` is caught rather
+ * than read as `1`. The lookbehind keeps that from misreading the hyphen in a
+ * plain-ASCII range: in `0.0-2.0` the `-` follows a digit, so the match starts
+ * at `2` and the range is two positive values, not `0.0` and `-2.0`.
+ *
+ * KNOWN BOUNDARY: the unit is the line. Guidance continued onto a following
+ * line that does not itself say "importance" is not seen. Widening to a
+ * paragraph would drag in neighbouring bullets, which is the false-failure
+ * direction on a guard that already enforces a formatting convention — so the
+ * line stays the unit, and the guidance stays on one line.
  */
 function extractImportanceNumbers(prompt: string): number[] {
   const found: number[] = [];
   for (const line of prompt.split('\n')) {
     if (!/importance/i.test(line)) continue;
-    for (const m of line.matchAll(/\d+(?:\.\d+)?/g)) found.push(Number(m[0]));
+    for (const m of line.matchAll(/(?<![\d.])-?\d+(?:\.\d+)?/g)) found.push(Number(m[0]));
   }
   return found;
 }
@@ -239,6 +250,10 @@ describe('onboard prompt vs registered schema — importance drift guard', () =>
     // A line that DOES mention importance but states no number is the shape the
     // floor exists to reject — the extractor must return nothing for it too.
     assert.deepEqual(extractImportanceNumbers('   - `importance`: use your judgement.'), []);
+    // A leading minus belongs to the number: `-1` must not read as `1` and slip
+    // past `.min(0)`. And a plain-ASCII range must not read its hyphen as one.
+    assert.deepEqual(extractImportanceNumbers('   - `importance`: -1'), [-1]);
+    assert.deepEqual(extractImportanceNumbers('   - `importance`: range 0.0-2.0'), [0.0, 2.0]);
   });
 });
 

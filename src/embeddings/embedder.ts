@@ -152,6 +152,21 @@ export interface SemanticSearchOptions {
    */
   since?: string;
   kind?: string;
+  /**
+   * What to sort by before the `limit` slice.
+   *
+   * `'score'` (default) is the decay-weighted ranking —
+   * `similarity * recallBoost * importance` — which is what a relevance query
+   * wants. `'similarity'` is the raw cosine, for callers asking the different
+   * question "which row is the closest match", where weighting is noise.
+   *
+   * The distinction is load-bearing because the slice happens BEFORE the
+   * caller sees anything: a caller that re-picks by raw similarity from a
+   * score-ordered slice is still choosing from a window that weighting
+   * selected, so the raw-best row can have been dropped before it ever
+   * arrives. `context`'s entity resolution is that caller (D21).
+   */
+  orderBy?: 'score' | 'similarity';
 }
 
 export async function semanticSearch(
@@ -246,7 +261,11 @@ export function semanticSearchWithVector(
     };
   });
 
-  scored.sort((a, b) => b.finalScore - a.finalScore);
+  // Both keys are already computed for every row, so ordering by either is free
+  // — what is not free is slicing the wrong one, since the slice is final.
+  scored.sort((a, b) =>
+    options?.orderBy === 'similarity' ? b.similarity - a.similarity : b.finalScore - a.finalScore
+  );
   // Strip finalScore from results — internal ranking detail
   return scored.slice(0, limit).map(({ finalScore, ...rest }) => rest);
 }
