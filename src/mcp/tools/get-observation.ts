@@ -1,5 +1,5 @@
 import { getObservationsByIds } from '../../db/observations.js';
-import { findEntityById, getEntityVersion } from '../../db/entities.js';
+import { findEntityById } from '../../db/entities.js';
 import { isAppendOnlyEntity } from '../../config.js';
 
 export interface GetObservationInput {
@@ -53,10 +53,18 @@ export interface GetObservationResult {
  *
  * Bounded by construction, and the bound is on the ROW, not on the response:
  * exactly the one row named, and a row cannot exceed the 50,000-char cap
- * `remember` enforces on write. JSON escaping then inflates that on the wire —
- * measured 1.01x on prose, 1.21x on newline-dense text, and 2.01x on a row of
- * pure quote characters, so the serialized worst case is ~100,000 chars.
- * A real bound, then, but not a small one, and stated as what it is.
+ * `remember` enforces on write. JSON escaping then inflates that on the wire,
+ * by an amount that depends entirely on the content. Measured on 45,000-char
+ * inputs: **1.003x** on this repo's own prose, **1.014x** on a log with a
+ * newline every ~70 chars, and **1.20x** on a synthetic string with a newline
+ * every 5. Only the first two describe real memories; the third is a stress
+ * input, and an earlier draft of this comment wrongly called it "what a real
+ * harvest entry actually is". The ceiling is **2.01x** — 50,000 quote or
+ * backslash characters serialize to ~100,000 — and that ceiling holds only
+ * because `server.ts` strips C0 control characters on every write path. A row
+ * of raw control characters, which could only arrive by calling `remember()`
+ * as a function (a script, a migration, a restored DB), serializes at 6.01x.
+ * Narrowing that sanitizer would silently triple this bound.
  *
  * This is a READ. It does not touch `recall_count` or `last_recalled_at`,
  * following the rule the codebase already keeps: search bumps access telemetry
@@ -100,7 +108,6 @@ export function getObservation(input: GetObservationInput): GetObservationResult
   }
 
   const appendOnly = isAppendOnlyEntity(entity.name);
-  const version = getEntityVersion(entity.name);
 
   return {
     success: true,
@@ -116,7 +123,9 @@ export function getObservation(input: GetObservationInput): GetObservationResult
       remembered_at: observation.created_at,
       recall_count: observation.recall_count,
       last_recalled_at: observation.last_recalled_at,
-      version_hash: version?.version_hash ?? null,
+      // Already on the row `findEntityById` returned — a second lookup by
+      // name would re-query for a column we are holding.
+      version_hash: entity.version_hash,
     },
     message: appendOnly
       ? `Observation from "${entity.name}", which is an append-only entity: its observations are dated records, and overlap between them is the shared format, not redundancy. Read it, but do NOT update, merge or otherwise consolidate it.`

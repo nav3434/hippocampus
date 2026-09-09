@@ -132,11 +132,10 @@ describe('get_observation is bounded where the prescribed recall re-read is not'
     // tool, same claim, content that doubles under JSON.stringify.
     const entity = 'project:fetch-escape-dense';
     const dense = '"\n'.repeat(20_000); // every character escapes
-    let id: string;
     return (async () => {
       const written = await remember({ entity, content: dense });
-      id = written.observationId;
-      const result = getObservation({ observation_id: id });
+      const result = getObservation({ observation_id: written.observationId });
+      assert.equal(result.observation!.observation_id, written.observationId);
       assert.equal(result.observation!.content, dense, 'content must survive verbatim');
 
       const size = wireSize(result);
@@ -272,10 +271,12 @@ describe('get_observation discloses append-only rows', () => {
     assert.equal(result.success, true);
     assert.equal(result.append_only, true);
     assert.match(result.message, /do NOT update, merge or otherwise consolidate/);
-    // The content itself is NOT withheld: this tool is called with an id the
+    // The content itself is NOT withheld. This tool is called with an id the
     // caller already holds, which is a different shape from `remember` offering
-    // an unrequested id beside a consolidation nudge (why near_matches withholds
-    // ids on these entities). Reading a log entry is exactly what it is for.
+    // an unrequested handle beside a consolidation nudge — on this branch
+    // `near_matches` truncates append-only CONTENT to a preview and carries no
+    // id at all. Reading a log entry is exactly what this tool is for; the
+    // do-not-consolidate notice is what keeps the read from reading as licence.
     assert.ok(result.observation!.content.includes('272K chars'), 'content is returned in full');
   });
 
@@ -288,6 +289,9 @@ describe('get_observation discloses append-only rows', () => {
       content: 'SQLCipher encrypts the whole database, embeddings included.',
     });
     const result = getObservation({ observation_id: written.observationId });
+    // Identity first: without it this passes while the tool returns some other
+    // row entirely, which a round-2 mutation demonstrated.
+    assert.equal(result.observation!.observation_id, written.observationId);
     assert.equal(result.append_only, false);
     assert.ok(Object.hasOwn(result, 'append_only'), 'append_only must be present, not merely falsy');
   });
@@ -381,11 +385,124 @@ describe('the boundary get_observation does NOT move', () => {
     const readB = getObservation({ observation_id: b.observationId });
     assert.equal(readA.success, true, 'both rows are readable — that is what the tool buys');
     assert.equal(readB.success, true);
+    // Two DISTINCT rows. Without this the combined-length control below is
+    // satisfied by the same 45,000-char row counted twice, which is what a
+    // round-2 mutation that ignored the requested id actually produced.
+    assert.equal(readA.observation!.observation_id, a.observationId);
+    assert.equal(readB.observation!.observation_id, b.observationId);
+    assert.notEqual(readA.observation!.content, readB.observation!.content);
 
     const combined = readA.observation!.content.length + readB.observation!.content.length;
     assert.ok(
       combined > 50_000,
       `CONTROL: the two rows (${combined}) must exceed the cap, or this boundary is not being tested`
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The wire path, and the guard for what the shipped description CLAIMS
+// ---------------------------------------------------------------------------
+
+describe('get_observation over the real MCP wire path', () => {
+  // Every test above calls the function directly, which skips registration,
+  // schema validation, param normalization and serialization. Round 1's blocker
+  // lived in exactly that gap: the registered DESCRIPTION advertised a field
+  // that does not exist, and nothing in the suite could fail.
+  type Handler = (req: unknown, extra: unknown) => Promise<Record<string, never>>;
+  let handlers: Map<string, Handler>;
+  let callId = 0;
+
+  before(() => {
+    const server = createMcpServer();
+    handlers = (server.server as unknown as { _requestHandlers: Map<string, Handler> })._requestHandlers;
+  });
+
+  // The SDK wraps user handlers with schema parsing, so the full JSON-RPC shape
+  // is required here — see the CLAUDE.md gotcha and tests/param-normalization.
+  async function callTool(args: unknown) {
+    const handler = handlers.get('tools/call');
+    assert.ok(handler, 'tools/call handler missing — SDK internals changed');
+    return (await handler!(
+      { jsonrpc: '2.0', id: ++callId, method: 'tools/call', params: { name: 'get_observation', arguments: args } },
+      {}
+    )) as unknown as { isError?: boolean; content: Array<{ text: string }> };
+  }
+
+  async function listed() {
+    const handler = handlers.get('tools/list');
+    const result = (await handler!(
+      { jsonrpc: '2.0', id: ++callId, method: 'tools/list', params: {} },
+      {}
+    )) as unknown as { tools: Array<{ name: string; description?: string; inputSchema?: { properties?: Record<string, unknown>; required?: string[] } }> };
+    return result.tools;
+  }
+
+  test('is advertised with a real schema, not the EMPTY_OBJECT fallback', async () => {
+    const tool = (await listed()).find(t => t.name === 'get_observation');
+    assert.ok(tool, 'get_observation must be advertised');
+    assert.deepEqual(Object.keys(tool!.inputSchema?.properties ?? {}), ['observation_id']);
+    assert.deepEqual(tool!.inputSchema?.required, ['observation_id']);
+  });
+
+  test('the description does not advertise a near_matches id unless remember emits one', async () => {
+    // The round-1 blocker as an invariant rather than a snapshot. It holds on
+    // this branch (no claim, no field) AND on the branch that adds the field
+    // (claim, field) — and fails only on the inconsistent state that shipped,
+    // where the description promised a handle the caller could not obtain.
+    // Whoever lands the near-match preview cap must update the description in
+    // the same change, which is precisely what did not happen here.
+    const entity = 'project:wire-description-invariant';
+    const shared = 'Shared opening that carries these two notes over the near-match threshold. ';
+    const first = await remember({ entity, content: `${shared}The first note concerns Caddy on the host.` });
+    backdate(first.observationId, '2026-07-01');
+    const second = await remember({ entity, content: `${shared}The second note concerns the Docker volume.` });
+
+    const matches = second.near_matches ?? [];
+    assert.ok(matches.length > 0, 'PREMISE: the fixture must produce a near match to inspect');
+    const emitsId = Object.hasOwn(matches[0] as object, 'observation_id');
+
+    const tool = (await listed()).find(t => t.name === 'get_observation');
+    const claimsId = /near_matches/.test(tool!.description ?? '');
+
+    assert.equal(
+      claimsId,
+      emitsId,
+      claimsId
+        ? 'the description advertises near_matches as an id source, but remember emits no observation_id there'
+        : 'remember now emits near_matches[].observation_id — say so in the tool description'
+    );
+  });
+
+  test('a canonical call returns the row in-band', async () => {
+    const written = await remember({ entity: 'project:wire-call', content: 'Healthcheck takes ~15s after restart.' });
+    const res = await callTool({ observation_id: written.observationId });
+    assert.notEqual(res.isError, true, 'a successful read must not be flagged isError');
+    const body = JSON.parse(res.content[0].text);
+    assert.equal(body.success, true);
+    assert.equal(body.observation.observation_id, written.observationId);
+    assert.equal(body.observation.content, 'Healthcheck takes ~15s after restart.');
+  });
+
+  test('observationId — the exact field name remember returns — normalizes', async () => {
+    const written = await remember({ entity: 'project:wire-call', content: 'The sweep caps sessions with an LRU.' });
+    const res = await callTool({ observationId: written.observationId });
+    const body = JSON.parse(res.content[0].text);
+    assert.equal(body.success, true, 'a caller copying the field name across must not get a validation error');
+    assert.equal(body.observation.observation_id, written.observationId);
+  });
+
+  test('an unknown id is an in-band success:false, not a transport error', async () => {
+    // D17's lesson runs the other way here: not-found is the tool working, so
+    // flagging isError would make a legitimate answer look like a malfunction.
+    // Matches forget's convention.
+    const res = await callTool({ observation_id: '00000000-0000-4000-8000-000000000000' });
+    assert.notEqual(res.isError, true);
+    assert.equal(JSON.parse(res.content[0].text).success, false);
+  });
+
+  test('a missing id is rejected loudly by schema validation', async () => {
+    const res = await callTool({}).catch((err: unknown) => ({ isError: true, content: [{ text: String(err) }] }));
+    assert.equal(res.isError, true, 'the required param must be enforced, not defaulted');
   });
 });
