@@ -1,5 +1,6 @@
 import { listEntities } from '../../db/entities.js';
 import { getDatabase } from '../../db/index.js';
+import { IMPORTANCE_MAX, IMPORTANCE_MIN, IMPORTANCE_NEUTRAL } from '../../db/observations.js';
 
 export interface OnboardInput {
   source?: string;
@@ -92,9 +93,9 @@ function bootstrapPrompt(sourceHint: string, existingSection: string): string {
    - \`type\`: "person", "project", "pattern", "preference", "skill", "organization"
    - \`kind\`: "fact", "decision", "preference", "rationale", "exploration"
    - \`content\`: Telegraphic form for facts — drop articles, pronouns, filler. One fact per call. Richer kinds can be longer.
-   - \`importance\`: Pass 1.5–2.0 for identity facts, core principles, and load-bearing decisions. Default 1.0.
+   - \`importance\`: range ${IMPORTANCE_MIN.toFixed(1)}–${IMPORTANCE_MAX.toFixed(1)}, neutral ${IMPORTANCE_NEUTRAL.toFixed(1)} (the default). Pass 1.5–${IMPORTANCE_MAX.toFixed(1)} for identity facts, core principles, and load-bearing decisions; below ${IMPORTANCE_NEUTRAL.toFixed(1)} to de-prioritise. A value outside the range is REJECTED — and the rejection comes back as a tool error, not an exception, so the write silently does not happen.
    - Examples:
-     - Fact: remember({ entity: "karolina", type: "person", kind: "fact", content: "PhD atmospheric physics, TU Delft", importance: 2.0 })
+     - Fact: remember({ entity: "karolina", type: "person", kind: "fact", content: "PhD atmospheric physics, TU Delft", importance: ${IMPORTANCE_MAX.toFixed(1)} })
      - Decision + rationale: remember({ entity: "project:hippocampus", kind: "decision", content: "Dropped remote Claude Code feature" }) then remember({ entity: "project:hippocampus", kind: "rationale", content: "Anthropic shipped native session sync — building commodity infrastructure wastes time better spent on core differentiator" })
      - Exploration: remember({ entity: "project:hippocampus", kind: "exploration", content: "Half-formed: what if memory server distinguished between facts and skills? Skills shape behavior, facts inform it. Not sure where the boundary is." })
      - Pattern: remember({ entity: "pattern:unfunded-visionary", type: "pattern", kind: "fact", content: "Technically literate, no funding, seeks advisor credibility validation. Signal: asks you to be front-facing for their venture. Not a prospect — ask doesn't match paid advisory." })
@@ -129,7 +130,7 @@ function ongoingPrompt(sourceHint: string, existingSection: string): string {
    - \`type\`: "person", "project", "pattern", "preference", "skill", "organization"
    - \`kind\`: "fact", "decision", "rationale", "pattern", "preference", "exploration", "session-log"
    - \`content\`: Telegraphic form — drop articles, pronouns, filler. One claim per call. Richer kinds can be longer.
-   - \`importance\`: Pass 1.5–2.0 for identity facts, core principles, and load-bearing decisions. Default 1.0.
+   - \`importance\`: range ${IMPORTANCE_MIN.toFixed(1)}–${IMPORTANCE_MAX.toFixed(1)}, neutral ${IMPORTANCE_NEUTRAL.toFixed(1)} (the default). Pass 1.5–${IMPORTANCE_MAX.toFixed(1)} for identity facts, core principles, and load-bearing decisions; below ${IMPORTANCE_NEUTRAL.toFixed(1)} to de-prioritise. A value outside the range is REJECTED — and the rejection comes back as a tool error, not an exception, so the write silently does not happen.
 
 4. **On the \`remember\` response — handle \`near_matches\`:**
    - \`novelty\` < 0.3 (and a near-match exists with high overlap) → use \`update\` on the existing observation, or \`merge\` if multiple cluster. Do not accumulate duplicates.

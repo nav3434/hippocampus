@@ -14,6 +14,7 @@ import { checkVersion } from './tools/check-version.js';
 import { onboard } from './tools/onboard.js';
 import { registerContextResources } from './resources/context.js';
 import { normalizeParams } from './param-normalization.js';
+import { IMPORTANCE_MAX, IMPORTANCE_MIN, IMPORTANCE_NEUTRAL } from '../db/observations.js';
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -47,10 +48,15 @@ export function createMcpServer(): McpServer {
         .describe('Source of the information (e.g., "conversation", "explicit")'),
       importance: z
         .number()
-        .min(0)
-        .max(1)
+        .min(IMPORTANCE_MIN)
+        .max(IMPORTANCE_MAX)
         .optional()
-        .describe('Importance score (0.0-1.0, default 1.0). Higher = boosted in recall ranking. Use for facts that should always surface.'),
+        .describe(
+          `Importance score (${IMPORTANCE_MIN.toFixed(1)}-${IMPORTANCE_MAX.toFixed(1)}, default ` +
+            `${IMPORTANCE_NEUTRAL.toFixed(1)} = neutral). Multiplies into recall ranking: above ` +
+            `${IMPORTANCE_NEUTRAL.toFixed(1)} boosts, below it de-prioritises. Use ` +
+            `1.5-${IMPORTANCE_MAX.toFixed(1)} for facts that should always surface.`
+        ),
       kind: z
         .string()
         .min(1)
