@@ -113,11 +113,16 @@ describe('get_observation is bounded where the prescribed recall re-read is not'
 
     // Bound the PROPERTY, not the fixture. An earlier version asserted
     // `size < rowChars * 1.2`, which passed only because ledgerPart() pads with
-    // characters JSON never escapes. Newline-dense text — which is what a real
-    // harvest entry or research ledger actually is — measures 1.21x, and a row
-    // of quote characters measures 2.01x, so that assertion pinned the fixture's
-    // escape density rather than the tool. The real claim is "the row it was
-    // asked for, plus a small fixed envelope", and escaping belongs to the row.
+    // characters JSON never escapes — it pinned the fixture's escape density
+    // rather than the tool. Measured on 45,000-char inputs: 1.003x on real
+    // prose, 1.014x on a log with a newline every ~70 chars, 1.20x on a
+    // synthetic newline-every-5 string, and a 2.01x ceiling on quotes or
+    // backslashes. (An earlier draft of this comment called the 1.20x stress
+    // input "what a real harvest entry actually is", which is an order of
+    // magnitude out — it was corrected in DECISIONS.md and the tool's own doc
+    // and survived here, which is why D21 says to sweep the whole surface.)
+    // The real claim is "the row it was asked for, plus a small fixed
+    // envelope", and escaping belongs to the row.
     const size = wireSize(result);
     const escapedRowChars = JSON.stringify(rowById(target).content).length;
     const envelope = size - escapedRowChars;
@@ -273,9 +278,9 @@ describe('get_observation discloses append-only rows', () => {
     assert.match(result.message, /do NOT update, merge or otherwise consolidate/);
     // The content itself is NOT withheld. This tool is called with an id the
     // caller already holds, which is a different shape from `remember` offering
-    // an unrequested handle beside a consolidation nudge — on this branch
-    // `near_matches` truncates append-only CONTENT to a preview and carries no
-    // id at all. Reading a log entry is exactly what this tool is for; the
+    // an unrequested handle beside a consolidation nudge — `near_matches`
+    // previews content on every entity and withholds the ID on append-only
+    // ones. Reading a log entry is exactly what this tool is for; the
     // do-not-consolidate notice is what keeps the read from reading as licence.
     assert.ok(result.observation!.content.includes('272K chars'), 'content is returned in full');
   });
@@ -302,15 +307,16 @@ describe('get_observation discloses append-only rows', () => {
 // ---------------------------------------------------------------------------
 
 describe('the ids get_observation advertises are working handles', () => {
-  // The tool description names three id sources. An earlier version of this
-  // suite claimed to exercise `remember`'s `near_matches[].observation_id`,
-  // which DOES NOT EXIST on this branch — near_matches is
-  // `{content, similarity}` (src/mcp/tools/remember.ts). The test read
-  // `match.observation_id ?? first.observationId`, so it silently fell through
-  // to an id obtained the other way and passed while proving nothing, and the
-  // shipped tool description advertised the nonexistent field as fact. Both are
-  // fixed; these tests pin the sources that actually exist, one per format that
-  // actually emits an id.
+  // An earlier version of this suite claimed to exercise `remember`'s
+  // `near_matches[].observation_id` at a time when that field did not exist
+  // here — D20 was still unlanded, `near_matches` was `{content, similarity}`,
+  // and the test read `match.observation_id ?? first.observationId`, so it
+  // silently fell through to an id obtained the other way and passed while
+  // proving nothing. The shipped tool description advertised the field as fact
+  // on the strength of that green test. D20 has since landed and the field is
+  // real, which is exactly why these tests pin each source independently rather
+  // than through one fallback chain: the id-source invariant in the wire suite
+  // below is what ties the description to what `remember` actually emits.
   const entity = 'project:fetch-id-sources';
 
   test('an id from remember resolves', async () => {
