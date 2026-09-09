@@ -9,10 +9,12 @@
  *    take a slot and vanish, returning fewer rows than asked for.
  * 3. The spread branch's re-sort ordered DIRECT hits by raw cosine, throwing
  *    away the boost the search had just ranked them by.
- * The fourth defect — `context`'s semantic fallback — is pinned in
- * `tests/context-scoring.test.ts`, which needs a database no other fixture
- * writes to: `context` takes no type filter, so any boosted row seeded here
- * would compete for its topic.
+ * A fourth instance of the same mechanism lives in `context`'s semantic
+ * fallback. It is NOT covered here and is not D22's to claim: D21 landed a
+ * stronger fix for it (`orderBy: 'similarity'`, which also closes the window
+ * displacement a floor alone leaves open), with its own guards in
+ * `tests/context-resolution*.test.ts`. This file's own draft of that test was
+ * deleted at the merge rather than kept as a near-duplicate.
  *
  * Every guard here that could pass vacuously carries a POSITIVE CONTROL: an
  * assertion that the fixture would have fired against the unfixed code.
@@ -45,13 +47,16 @@ const { cosineSimilarity } = await import('../src/embeddings/similarity.js');
 // against silently desyncs from it, and every fixture margin computed here then
 // describes a system that no longer exists.
 //
-// What that does and does not buy, stated precisely because the first version
-// of this comment overclaimed: retuning SPREAD_DECAY now fails two tests, since
-// the fixture window `directSim < spreadSim < directSim / SPREAD_DECAY` stops
-// holding. Retuning RECALL_BOOST_ALPHA fails nothing — the fixtures move with
-// it and stay inside their windows, by design, because it is a tuning knob and
-// not a contract. The constant is shared between the search and the spread path
-// so the two cannot disagree; nothing here claims to detect it being changed.
+// What that does and does not buy, stated precisely because two earlier
+// versions of this comment got it wrong in opposite directions. Retuning
+// SPREAD_DECAY fails two tests, since the fixture window
+// `directSim < spreadSim < directSim / SPREAD_DECAY` stops holding. Retuning
+// RECALL_BOOST_ALPHA is asymmetric: LOWERING it fails several tests (the
+// boost-dependent fixtures stop clearing their bars — measured, 0.05 fails 7),
+// while RAISING it fails none of them, because every fixture moves with it and
+// stays inside its window. That is why the sweep suite below pins the constant
+// against the worked example CLAUDE.md quotes — importing a constant protects
+// the tests from desyncing, and pins nothing about its value.
 const boostFor = (recallCount: number) => 1 + RECALL_BOOST_ALPHA * Math.log(1 + recallCount);
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
@@ -345,10 +350,17 @@ describe('SPREAD_DECAY subordinates a related memory that would otherwise win (D
       `spread ${spreadSim.toFixed(3)} does not beat direct ${directSim.toFixed(3)} — ` +
       'without the decay there would be nothing for it to overturn'
     );
+    // Compared against the direct row's RANK score, which is what the code
+    // orders on — `directSim * recallBoost * importance`. Neither fixture row
+    // is boosted and both sit at neutral importance, so the rank score is the
+    // cosine here; saying so keeps the precondition aligned with the condition
+    // rather than being a weaker stand-in for it.
+    const directRank = directSim * boostFor(0) * 1.0;
+    assert.equal(directRank, directSim, 'fixture assumes the direct row is unboosted at neutral importance');
     assert.ok(
-      spreadSim * SPREAD_DECAY < directSim,
-      `damped spread ${(spreadSim * SPREAD_DECAY).toFixed(3)} still beats direct ` +
-      `${directSim.toFixed(3)} — the decay is too weak to decide this fixture`
+      spreadSim * SPREAD_DECAY < directRank,
+      `damped spread ${(spreadSim * SPREAD_DECAY).toFixed(3)} still beats the direct ` +
+      `rank ${directRank.toFixed(3)} — the decay is too weak to decide this fixture`
     );
     assert.ok(spreadSim * SPREAD_DECAY >= SIMILARITY_THRESHOLD, 'the spread row must clear its own bar');
   });
@@ -721,6 +733,7 @@ describe('keyword-fallback rows carry no similarity (D22)', () => {
     const result = await recall({
       query: 'harbour seal',
       limit: 50,
+      type: 'note',
       spread: true,
       format: 'full',
     }) as { memories: Array<{ entity: string; similarity?: number }> };
@@ -742,7 +755,7 @@ describe('keyword-fallback rows carry no similarity (D22)', () => {
   });
 
   test('a keyword-only match has no similarity field rather than a zero', async () => {
-    const result = await recall({ query: 'zqxjvt', limit: 10, spread: false, format: 'full' }) as {
+    const result = await recall({ query: 'zqxjvt', limit: 10, type: 'note', spread: false, format: 'full' }) as {
       memories: Array<{ entity: string; similarity?: number }>;
     };
     const row = result.memories.find(m => m.entity === NONSENSE_ENTITY);
@@ -799,6 +812,182 @@ describe('an unusable minSimilarity throws rather than emptying the result (D22)
         `minSimilarity ${ok} is inside [-1, 1] and must be accepted`
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The floor widens the SEED set, so spread returns rows it could not reach
+// ---------------------------------------------------------------------------
+
+describe('freeing a direct slot makes its relationships reachable (D22)', () => {
+  // The disclosure paragraph in D22 originally said the set of rows coming back
+  // was unchanged and only the displayed number moved. That is true of the
+  // spread path in isolation and FALSE of the two together: spreading seeds
+  // from the direct rows, so a direct row that was displaced by a boosted
+  // below-floor row took its relationships out of the answer with it. Round 3
+  // caught the claim; this pins the behaviour it should have described.
+  const QUERY = 'a footpath along the cliff edge';
+  const SEED_TYPE = 'seed-direct';
+  const RELATED_TYPE = 'seed-related';
+  const STRONG = 'The coastal footpath runs right along the cliff edge';
+  const SEED = 'A waymarked trail follows the headland above the sea';
+  const RELATED = 'a footpath along the cliff edge';
+  const DECOYS = [
+    'Depreciation is charged on a straight-line basis',
+    'The build pipeline caches node modules between runs',
+  ];
+  const LIMIT = 3;
+
+  let seedSim = 0;
+  let decoySims: number[] = [];
+  let queryVector: Float32Array;
+  const getQueryVector = () => queryVector;
+
+  before(async () => {
+    await remember({ content: STRONG, entity: 'seed-strong-e', type: SEED_TYPE });
+    await remember({ content: SEED, entity: 'seed-seed-e', type: SEED_TYPE });
+    for (let i = 0; i < DECOYS.length; i++) {
+      await remember({ content: DECOYS[i], entity: `seed-decoy-${i}`, type: SEED_TYPE });
+    }
+    await remember({ content: RELATED, entity: 'seed-related-e', type: RELATED_TYPE });
+    createRelationship(
+      findOrCreateEntity('seed-seed-e', SEED_TYPE).id,
+      findOrCreateEntity('seed-related-e', RELATED_TYPE).id,
+      'mentions'
+    );
+
+    const q = await generateEmbedding(QUERY);
+    queryVector = q;
+    seedSim = cosineSimilarity(q, await generateEmbedding(SEED));
+    decoySims = [];
+    for (const d of DECOYS) decoySims.push(cosineSimilarity(q, await generateEmbedding(d)));
+
+    // Derive the recall count from the MEASURED similarities rather than
+    // hard-coding one: each decoy is boosted just past 1.5x the seed's score,
+    // so the fixture keeps its margin if the embedding model moves.
+    const db = getDatabase();
+    for (let i = 0; i < DECOYS.length; i++) {
+      const needed = (1.5 * seedSim) / Math.max(decoySims[i], 1e-6);
+      const count = Math.ceil(Math.exp((needed - 1) / RECALL_BOOST_ALPHA));
+      const row = db.prepare('SELECT id FROM observations WHERE content = ?').get(DECOYS[i]) as { id: string };
+      setRecallCount(row.id, count);
+    }
+  });
+
+  test('precondition: the decoys are below the floor and outrank the seed', () => {
+    for (const sim of decoySims) {
+      assert.ok(sim < SIMILARITY_THRESHOLD, `a decoy scores ${round3(sim)}, above the floor`);
+    }
+    assert.ok(seedSim >= SIMILARITY_THRESHOLD, `the seed scores ${round3(seedSim)}, below the floor`);
+
+    // The unfixed mechanism, still callable: rank the whole set and slice.
+    const unfloored = semanticSearchWithVector(getQueryVector(), { limit: LIMIT, type: SEED_TYPE });
+    assert.ok(
+      !unfloored.some(r => r.entity_name === 'seed-seed-e'),
+      'the seed survives an unfloored slice, so nothing was displacing it'
+    );
+  });
+
+  test('the related row is reachable because the seed kept its slot', async () => {
+    const result = await recall({
+      query: QUERY,
+      type: SEED_TYPE,
+      limit: LIMIT,
+      spread: true,
+      format: 'full',
+    }) as { memories: Array<{ entity: string }> };
+
+    assert.ok(
+      result.memories.some(m => m.entity === 'seed-seed-e'),
+      'the seed entity should hold a slot now that the floor runs before the slice'
+    );
+    assert.ok(
+      result.memories.some(m => m.entity === 'seed-related-e'),
+      'the related row is only reachable by spreading from the seed — pre-D22 the ' +
+      'seed was displaced by a boosted below-floor row and this row did not exist ' +
+      'in the answer at all'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contracts the survivors of the round-3 mutation sweep left unpinned
+// ---------------------------------------------------------------------------
+
+describe('the search honours its own limit and its own boost constant (D22)', () => {
+  const SWEEP_TYPE = 'sweep-fixture';
+  const TEXTS = [
+    'The ferry leaves the quay at first light',
+    'Gulls follow the wake all the way across',
+    'A thermos of coffee sits wedged by the rail',
+    'The crossing takes two hours in fair weather',
+    'Cars are lashed down on the vehicle deck',
+  ];
+
+  let queryVector: Float32Array;
+
+  before(async () => {
+    for (let i = 0; i < TEXTS.length; i++) {
+      await remember({ content: TEXTS[i], entity: `sweep-e${i}`, type: SWEEP_TYPE });
+    }
+    queryVector = await generateEmbedding('the morning ferry crossing');
+  });
+
+  test('semanticSearchWithVector slices to limit', () => {
+    // Nothing pinned this. Removing the slice entirely left the whole suite
+    // green, while every over-fetch guard in this file is written on the
+    // assumption that the slice is what makes a slot scarce.
+    const all = semanticSearchWithVector(queryVector, { limit: 100, type: SWEEP_TYPE });
+    assert.ok(all.length >= 3, `need >= 3 rows in the fixture, got ${all.length}`);
+    for (const limit of [1, 2, 3]) {
+      const got = semanticSearchWithVector(queryVector, { limit, type: SWEEP_TYPE });
+      assert.equal(got.length, limit, `limit ${limit} returned ${got.length} rows`);
+    }
+  });
+
+  test('RECALL_BOOST_ALPHA still produces the boost the docs quote', () => {
+    // CLAUDE.md documents the decay boost with a worked example — a recall
+    // count of 100 giving ~1.46x — and three fixtures in this file are sized
+    // against it. Because the tests import the constant rather than mirroring
+    // it, raising it tenfold left everything green: the fixtures move with it.
+    // This is the one place that pins the value, so the documented example and
+    // the code cannot drift apart silently.
+    assert.equal(RECALL_BOOST_ALPHA, 0.1);
+    assert.ok(
+      Math.abs(boostFor(100) - 1.4615) < 0.001,
+      `boost at a recall count of 100 is ${boostFor(100).toFixed(4)}, not the ~1.46x CLAUDE.md quotes`
+    );
+  });
+
+  test('the direct path reports similarity rounded to three places', async () => {
+    const result = await recall({
+      query: 'the morning ferry crossing',
+      type: SWEEP_TYPE,
+      spread: false,
+      format: 'full',
+    }) as { memories: Array<{ similarity?: number }> };
+
+    assert.ok(result.memories.length > 0);
+    for (const m of result.memories) {
+      if (m.similarity === undefined) continue;
+      assert.equal(m.similarity, round3(m.similarity), `similarity ${m.similarity} is not rounded`);
+    }
+  });
+
+  test('an index line shows "-" for an entity with no similarity at all', async () => {
+    // Not `0.00`, which is a real cosine and reads as "compared, and distant"
+    // in the one format an AI uses to choose what to expand.
+    const result = await recall({
+      query: 'harbour seal',
+      limit: 50,
+      type: 'note',
+      spread: false,
+      format: 'index',
+    }) as { text: string };
+
+    const line = result.text.split('\n').slice(1).find(l => l.startsWith('harbour seal filings|'));
+    assert.ok(line, 'the keyword-only entity should be in the index');
+    assert.equal(line.split('|')[3].split('|')[0], '-', `index line reads: ${line}`);
   });
 });
 

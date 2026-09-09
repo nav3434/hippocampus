@@ -469,7 +469,7 @@ export function describeDegradation(index: RecallIndex): string | null {
  *
  * NOT a completeness proof, and an earlier draft of this comment claimed it was.
  * `count` is what survived `recall`'s own `SIMILARITY_THRESHOLD = 0.15` filter
- * (`src/mcp/tools/recall.ts`), applied AFTER the search slices to the limit — so
+ * (`src/mcp/tools/recall.ts`), applied to what the search returns; as of D22 the floor runs INSIDE the search, before its slice, so the rows dropped here are the ones the search itself excluded rather than ones it wasted slots on — so
  * a count below the limit does NOT mean the enumeration was exhaustive. It means
  * only that the slice was not full. Measured on prod 2026-09-02: `export`
  * reports 27 observations across 14 agents, the same recall reports 22 — five

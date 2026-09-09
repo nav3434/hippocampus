@@ -58,8 +58,11 @@ interface MemoryResult {
    * cosine while the spread path reported `sim * recallBoost * importance *
    * SPREAD_DECAY` in the same field, so two rows of a single `spread: true`
    * result were not comparable and the composite could exceed 1, which no
-   * cosine can. Ranking is done on a separate internal key, exactly as
-   * `semanticSearchWithVector` has always done it.
+   * cosine can. Ranking is done on a separate internal key — the pattern the
+   * direct search has always used internally, though as of D22 that function
+   * RETURNS its composite as `rank_score` rather than stripping it, because
+   * this file needs it to merge two differently-scored sets. Keeping the
+   * composite off the wire is therefore this file's job now, not the search's.
    *
    * Absent on keyword-fallback rows, where no vector comparison happened. That
    * is the absence of a similarity, not a third meaning of one.
@@ -71,8 +74,11 @@ interface MemoryResult {
 
 /**
  * A `MemoryResult` plus the key the merged set is ordered by — never returned.
- * Stripped before the response is built, the same way `semanticSearchWithVector`
- * keeps its composite off the rows it hands back.
+ * Stripped before the response is built. Note this is the LAST such barrier:
+ * `semanticSearchWithVector` used to strip its own composite at its exit and
+ * stopped when D22 needed to read it, so a future caller of that function is
+ * responsible for its own stripping. `rank_score` is named so a leak reads as
+ * a ranking detail rather than as a similarity, which is the least this can do.
  *
  * The scale is shared across every source so the merge is meaningful: the
  * direct path contributes the search's own `rank_score`, the spread path the
@@ -434,8 +440,9 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
   }
 
   // Strip the internal rank key here, once, so every return path below is
-  // handed the wire shape and none of them can leak it — the same reason
-  // `semanticSearchWithVector` strips its composite at its own single exit.
+  // handed the wire shape and none of them can leak it. A single exit for the
+  // same reason the search used to have one — and it is the only one left,
+  // since D22 made the search return its composite instead of stripping it.
   const limited: MemoryResult[] = memories
     .slice(0, input.limit)
     .map(({ rank, ...rest }) => rest);
@@ -557,13 +564,21 @@ function formatIndex(memories: MemoryResult[]): Omit<RecallIndexResult, keyof De
     return { success: true, count: 0, entity_count: 0, text: '#I 0 results, 0 entities' };
   }
 
-  const entityMap = new Map<string, { type: string | null; version_hash: string | null; obsCount: number; bestSimilarity: number }>();
+  // `bestSimilarity` is null for an entity whose every row came from the keyword
+  // leg. It used to coalesce to 0, which prints `0.00` — a real-looking cosine,
+  // in the one format an AI reads to decide which entity to expand, for a row
+  // that was never compared to a vector at all. The field stays in place (the
+  // line is positional) and carries `-` instead, matching the `full` format's
+  // contract that an absent similarity means no comparison happened.
+  const entityMap = new Map<string, { type: string | null; version_hash: string | null; obsCount: number; bestSimilarity: number | null }>();
   for (const m of memories) {
     const existing = entityMap.get(m.entity);
-    const sim = m.similarity ?? 0;
+    const sim = m.similarity ?? null;
     if (existing) {
       existing.obsCount++;
-      if (sim > existing.bestSimilarity) existing.bestSimilarity = sim;
+      if (sim !== null && (existing.bestSimilarity === null || sim > existing.bestSimilarity)) {
+        existing.bestSimilarity = sim;
+      }
     } else {
       entityMap.set(m.entity, { type: m.type, version_hash: m.version_hash ?? null, obsCount: 1, bestSimilarity: sim });
     }
@@ -584,7 +599,8 @@ function formatIndex(memories: MemoryResult[]): Omit<RecallIndexResult, keyof De
   for (const [name, { type, version_hash, obsCount, bestSimilarity }] of sorted) {
     const typeStr = type ?? '';
     const hashStr = version_hash ? `|v:${version_hash.slice(0, 8)}` : '';
-    lines.push(`${name}|${typeStr}|${obsCount} obs|${bestSimilarity.toFixed(2)}${hashStr}`);
+    const simStr = bestSimilarity === null ? '-' : bestSimilarity.toFixed(2);
+    lines.push(`${name}|${typeStr}|${obsCount} obs|${simStr}${hashStr}`);
   }
 
   return {
