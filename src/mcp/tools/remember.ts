@@ -18,7 +18,7 @@ const NEAR_MATCH_PREVIEW_CHARS = 200;
  * cannot tell it now holds a truncated one will compose a replacement from it.
  */
 const PREVIEW_NOTICE =
-  `. near_matches[].content is a ${NEAR_MATCH_PREVIEW_CHARS}-char preview, not the stored text — re-read the observation by its observation_id before acting on it`;
+  `. near_matches[].content is capped at ${NEAR_MATCH_PREVIEW_CHARS} chars — anything longer is a preview, not the stored text. Each match carries observation_id, created_at and kind to identify it; the full text is retrievable with recall (see the onboard tool for the consolidation sequence)`;
 
 export const rememberSchema = z.object({
   content: z
@@ -70,7 +70,10 @@ function utcDay(timestamp: string | null | undefined): string | null {
 }
 
 export interface NearMatch {
-  /** Bounded preview — enough to identify the overlap, never the full stored text. */
+  /**
+   * Capped at NEAR_MATCH_PREVIEW_CHARS. Anything longer is a preview; a shorter
+   * observation comes back whole, so the field alone does not say which you have.
+   */
   content: string;
   similarity: number;
   /**
@@ -79,6 +82,16 @@ export interface NearMatch {
    * string. Present everywhere else, where consolidation is the intended workflow.
    */
   observation_id?: string;
+  /**
+   * Identity, not payload. Near matches cluster on a shared skeleton — that is
+   * D10's own mechanism — so sibling previews are routinely byte-identical and
+   * the prefix is the least discriminating slice of the cluster. A date and a
+   * kind separate them at a few dozen bytes, and neither is a key to anything.
+   * `kind` also makes `merge`'s multi-kind refusal (D18) visible before the call
+   * rather than after it. Withheld on append-only entities with the id.
+   */
+  created_at?: string;
+  kind?: string | null;
 }
 
 export interface RememberResult {
@@ -163,7 +176,13 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
   const appendOnly = isAppendOnlyEntity(entity.name);
   const today = new Date().toISOString().slice(0, 10);
   let bestMatch: { similarity: number; index: number } | null = null;
-  const nearMatches: Array<{ content: string; similarity: number; observation_id: string }> = [];
+  const nearMatches: Array<{
+    content: string;
+    similarity: number;
+    observation_id: string;
+    created_at: string;
+    kind: string | null;
+  }> = [];
 
   for (let i = 0; i < existing.length; i++) {
     const sim = cosineSimilarity(vector, existing[i].vector);
@@ -183,6 +202,8 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
         content: existing[i].content,
         similarity: sim,
         observation_id: existing[i].observation_id,
+        created_at: existing[i].created_at,
+        kind: existing[i].kind,
       });
     }
   }
@@ -216,7 +237,13 @@ export async function remember(input: RememberInput): Promise<RememberResult> {
         ? `${match.content.slice(0, NEAR_MATCH_PREVIEW_CHARS)}…`
         : match.content,
     similarity: match.similarity,
-    ...(appendOnly ? {} : { observation_id: match.observation_id }),
+    ...(appendOnly
+      ? {}
+      : {
+          observation_id: match.observation_id,
+          created_at: match.created_at,
+          kind: match.kind,
+        }),
   }));
 
   if (bestMatch) {

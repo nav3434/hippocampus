@@ -161,7 +161,15 @@ describe('a successful remember response stays inside a token budget', () => {
 
     // Precondition: the report has to actually fire. Without this the budget
     // assertion below passes on an empty near_matches and proves nothing.
+    // The premise for the identity fields: siblings sharing an opening collapse
+    // to the same preview string, so the prefix alone cannot disambiguate them.
+    // If this ever stops holding, created_at/kind stop being load-bearing and
+    // this comment is the place that says so.
     assert.ok(result.near_matches, 'near_matches must be present');
+    const previews = new Set(result.near_matches!.map(m => m.content));
+    assert.equal(previews.size, 1, 'sibling previews are identical — that is why identity fields exist');
+    const dates = new Set(result.near_matches!.map(m => m.created_at));
+    assert.equal(dates.size, result.near_matches!.length, 'created_at separates what the preview cannot');
     assert.ok(
       result.near_matches!.length >= 2,
       `fixture must produce multiple overlaps, got ${result.near_matches!.length}`
@@ -319,6 +327,12 @@ describe('observation_id is the handle the preview replaces', () => {
     const written = await remember({ entity, content: ledgerPart(2) });
     const target = written.near_matches?.[0];
     assert.ok(target?.observation_id, 'a non-append-only near match must carry its id');
+    // Identity fields. Siblings that share an opening produce identical
+    // previews — verified below — so without these the report cannot say WHICH
+    // overlap it found, only that one exists.
+    assert.match(target!.created_at!, /^\d{4}-\d{2}-\d{2} /, 'the stored UTC timestamp');
+    assert.equal(target!.created_at!.slice(0, 10), '2026-09-01', 'must be the backdated sibling');
+    assert.ok('kind' in target!, 'kind must be reported, even when null');
     assert.notEqual(
       target!.observation_id,
       written.observationId,
@@ -355,6 +369,8 @@ describe('observation_id is the handle the preview replaces', () => {
     assert.ok(result.near_matches?.length, 'the overlap must still be reported');
     for (const match of result.near_matches!) {
       assert.equal(match.observation_id, undefined, 'no delete key on a log entity');
+      assert.equal(match.created_at, undefined, 'identity fields ride with the id');
+      assert.equal(match.kind, undefined, 'identity fields ride with the id');
       assert.ok(match.content.length <= 201, 'preview only');
     }
     assert.match(result.message, /Do NOT consolidate/);
