@@ -98,25 +98,26 @@ async function advertisedImportanceBounds(): Promise<{ minimum: number; maximum:
 // ---------------------------------------------------------------------------
 
 /**
- * Every number the `onboard` prompts state about `importance`.
+ * EVERY number stated on a line that mentions `importance`.
  *
- * Two forms, because an AI copies both: the argument literal an example hands
- * it (`importance: 2.0`) and the range prose the guidance states (`0.0–2.0`,
- * `1.5–2.0`). Scoped to lines that mention importance, so an unrelated numeral
- * elsewhere in the prompt cannot enter the set and fail this spuriously.
+ * Deliberately not a set of shape-aware patterns. The first version of this
+ * matched only range prose (`0.0–2.0`) and argument literals (`importance: 2.0`),
+ * and appending "Use 3.0 for absolutes" to the guidance line — reinstating the
+ * exact bug D21 fixed — passed it, because the surviving range still satisfied
+ * every assertion. A guard on prose cannot enumerate the shapes prose will take,
+ * so it reads every numeral instead and lets the bounds decide.
+ *
+ * The cost is the convention this enforces: a number on an importance line MUST
+ * be a valid importance value. A count, ratio or date there fails the guard.
+ * That is the safe direction — it fails loudly at edit time, in a repo whose
+ * recurring injury is the opposite (a check that quietly passes while measuring
+ * nothing), and the fix is one line break.
  */
 function extractImportanceNumbers(prompt: string): number[] {
   const found: number[] = [];
   for (const line of prompt.split('\n')) {
     if (!/importance/i.test(line)) continue;
-    // Range prose: "0.0–2.0" / "1.5-2.0" (en dash, em dash or hyphen).
-    for (const m of line.matchAll(/(\d+(?:\.\d+)?)\s*[–—-]\s*(\d+(?:\.\d+)?)/g)) {
-      found.push(Number(m[1]), Number(m[2]));
-    }
-    // Argument literal: "importance: 2.0".
-    for (const m of line.matchAll(/importance`?\s*:\s*(\d+(?:\.\d+)?)/gi)) {
-      found.push(Number(m[1]));
-    }
+    for (const m of line.matchAll(/\d+(?:\.\d+)?/g)) found.push(Number(m[0]));
   }
   return found;
 }
@@ -235,6 +236,9 @@ describe('onboard prompt vs registered schema — importance drift guard', () =>
   test('CONTROL: prose with no importance guidance extracts nothing', () => {
     // Which is why the length floor above is load-bearing rather than decorative.
     assert.deepEqual(extractImportanceNumbers('1. Store\n   - `kind`: fact, decision\n'), []);
+    // A line that DOES mention importance but states no number is the shape the
+    // floor exists to reject — the extractor must return nothing for it too.
+    assert.deepEqual(extractImportanceNumbers('   - `importance`: use your judgement.'), []);
   });
 });
 
@@ -327,6 +331,16 @@ describe('a boost above neutral actually reorders recall', () => {
     const simLess = cosineSimilarity(q, await generateEmbedding(LESS_SIMILAR));
 
     assert.ok(simLess > 0.15, `LESS_SIMILAR (${simLess}) is below recall's similarity threshold`);
+
+    // `recallBoost` is the third factor in the score and would confound the
+    // ordering if it differed across the four rows. It is 1 for all of them
+    // today — nothing has recalled them yet — but nothing asserted that, so a
+    // future test adding a `recall` earlier in this file could tilt the result
+    // without failing anything.
+    for (const entity of ['rank:boosted', 'rank:neutral-peer', 'rank:control-less', 'rank:control-more']) {
+      const [obs] = getObservationsByEntity(findOrCreateEntity(entity).id);
+      assert.equal(obs.recall_count, 0, `${entity} has been recalled already — recallBoost is no longer uniform`);
+    }
     const ratio = simMore / simLess;
     assert.ok(
       ratio > 1 && ratio < IMPORTANCE_MAX,

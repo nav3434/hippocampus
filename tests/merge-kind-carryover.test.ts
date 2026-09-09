@@ -103,7 +103,11 @@ describe('merge preserves observation metadata', () => {
     });
 
     const [merged] = obsFor('skill:test-merge-lowimp');
-    assert.equal(merged.importance, 0.4, '1.0 is the schema ceiling, not a neutral default');
+    assert.equal(
+      merged.importance,
+      0.4,
+      'a merge must carry the sources\' importance through, not reset it to the neutral 1.0'
+    );
   });
 
   test('null is "no opinion", not a third kind — [null, kind] carries the kind', async () => {
