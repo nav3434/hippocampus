@@ -106,7 +106,12 @@ export function createMcpServer(): McpServer {
       'missing relevant memories — do not read the result as the full picture, and say so when reporting it. ' +
       'degraded_reason names the cause. A semantic failure with no keyword matches is an error, never an empty result. ' +
       'spread: true has no keyword fallback and errors outright on a semantic failure — retry it with spread: false to ' +
-      'get the degraded keyword-only answer.',
+      'get the degraded keyword-only answer. ' +
+      'The similarity field on each memory is the raw cosine between your query and that memory, on every path that ' +
+      'computes one — never above 1.0, and comparable between any two rows of one response. It is NOT the ranking ' +
+      'score: results are ordered by relevance, which also weights how often a memory has been recalled and its ' +
+      'importance, so a row further down can carry a higher similarity. Memories matched only by keyword have no ' +
+      'similarity field at all, because no vector was compared.',
     {
       query: z
         .string()
@@ -149,7 +154,11 @@ export function createMcpServer(): McpServer {
       spread: z
         .boolean()
         .default(false)
-        .describe('Follow relationships 1 hop from matched entities and include related observations (dampened). Discovers contextually connected memories.'),
+        .describe(
+          'Follow relationships 1 hop from matched entities and include related observations. Discovers contextually ' +
+          'connected memories. Related observations are dampened — the damping lowers where they RANK and raises the ' +
+          'bar they must clear to appear at all; it does not change the similarity reported for them.'
+        ),
       format: z
         .enum(['full', 'compact', 'wire', 'index'])
         .default('full')
