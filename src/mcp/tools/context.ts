@@ -62,8 +62,11 @@ export async function context(input: ContextInput): Promise<ContextResult> {
     // reads only `[0]`, and the search ranks by the boosted composite, so a row
     // under the floor could hold position 0 on its recall count alone and make
     // this branch answer "No entity found" while a qualifying entity sat at
-    // [1]. Reproduced on a two-row fixture: raw 0.202 vs 0.143, a recall count
-    // of 100 on the lower one, and the topic stopped resolving. Same shape as
+    // [1]. Reproduced on the two-row fixture in tests/context-scoring.test.ts
+    // (raw cosines 0.215 and 0.180, a recall count of 100 on the lower one, so
+    // 0.180 * 1.46 = 0.263 takes position [0]) — the topic stopped resolving.
+    // The test asserts that shape rather than these numbers, so re-derive them
+    // from the fixture rather than trusting this comment. Same shape as
     // the `recall` half of D22 and the same one-argument fix; worth stating
     // that it is not merely defensive here, because the loss is total — this is
     // the last leg of exact -> LIKE -> semantic, so a miss is the whole answer.

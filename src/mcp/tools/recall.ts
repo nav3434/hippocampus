@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { searchObservations, touchRecalledObservations, type ObservationWithEntity } from '../../db/observations.js';
 import { findEntityByName, getEntityVersion } from '../../db/entities.js';
 import { getRelatedEntities } from '../../db/relationships.js';
-import { generateEmbedding, semanticSearchWithVector, getEmbeddingsByEntity, semanticSearch, type SemanticSearchResult } from '../../embeddings/embedder.js';
+import { generateEmbedding, semanticSearchWithVector, getEmbeddingsByEntity, semanticSearch, RECALL_BOOST_ALPHA, type SemanticSearchResult } from '../../embeddings/embedder.js';
 import { cosineSimilarity } from '../../embeddings/similarity.js';
 import { isAppendOnlyEntity } from '../../config.js';
 import { normalizeSinceBound, parseStoredTimestamp, SINCE_CONTRACT_ERROR } from '../../db/timestamps.js';
@@ -31,7 +31,6 @@ export type RecallInput = z.infer<typeof recallSchema>;
 
 const SIMILARITY_THRESHOLD = 0.15;
 const SPREAD_DECAY = 0.5;
-const SPREAD_ALPHA = 0.1;
 
 interface MemoryResult {
   observation_id: string;
@@ -219,9 +218,17 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
 
   // Semantic results first (primary). The threshold is now enforced inside the
   // search (`minSimilarity` above), so this filter is a redundant guard rather
-  // than the mechanism — kept deliberately, so "recall never returns a semantic
-  // row below the floor" holds here whatever a future caller passes or a future
-  // search does, instead of resting on an argument two modules away.
+  // than the mechanism — kept deliberately, so "no DIRECT row is returned below
+  // the floor" holds here whatever a future caller passes or a future search
+  // does, instead of resting on an argument two modules away.
+  //
+  // Scoped to direct rows on purpose. A spread row is admitted on its DAMPED
+  // score, so once `similarity` became the raw cosine a spread row can report a
+  // value under this floor (D22, and pinned in tests/recall-scoring.test.ts).
+  // That is the same set of rows spreading has always returned — the inclusion
+  // rule did not move — but the number shown for them did, and the two floors
+  // are no longer commensurable. Do not "restore" the invariant across both
+  // paths without deciding what `spread: true` should return.
   for (const r of semanticResults) {
     if (r.similarity < SIMILARITY_THRESHOLD) continue;
     if (!seen.has(r.observation_id)) {
@@ -322,18 +329,24 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
           if (sinceMs !== undefined && parseStoredTimestamp(v.created_at) < sinceMs) continue;
 
           const sim = cosineSimilarity(queryVector, v.vector);
-          const recallBoost = 1 + SPREAD_ALPHA * Math.log(1 + (v.recall_count ?? 0));
+          const recallBoost = 1 + RECALL_BOOST_ALPHA * Math.log(1 + (v.recall_count ?? 0));
           const importance = v.importance ?? 1.0;
           const score = sim * recallBoost * importance * SPREAD_DECAY;
 
           // The INCLUSION bar stays on the damped score, unchanged (D22).
-          // `SPREAD_DECAY` is doing two jobs here — a rank penalty and an entry
-          // bar roughly twice as high as the direct path's — and only the first
-          // is what this change is about. Comparing raw `sim` to the threshold
-          // instead would admit a whole class of spread rows that are currently
-          // excluded, which is a decision about what `spread: true` returns, not
-          // about what a number in the response means. Left for whoever wants
-          // to make it deliberately.
+          // `SPREAD_DECAY` does two jobs here — a rank penalty, and an entry bar
+          // — and only the first is what this change is about. Comparing raw
+          // `sim` to the threshold instead would admit a whole class of spread
+          // rows that are currently excluded, which is a decision about what
+          // `spread: true` returns, not about what a number in the response
+          // means. Left for whoever wants to make it deliberately.
+          //
+          // Note the bar is NOT simply "twice the direct floor". In raw-cosine
+          // terms it is `SIMILARITY_THRESHOLD / (SPREAD_DECAY * recallBoost *
+          // importance)` — double only for an unboosted row at neutral
+          // importance, and LOWER than the direct floor once the multipliers
+          // grow. So a frequently-recalled spread row can be returned with a
+          // reported similarity under the direct floor.
           if (score >= SIMILARITY_THRESHOLD) {
             seen.add(v.observation_id);
             memories.push({
@@ -545,7 +558,16 @@ function formatIndex(memories: MemoryResult[]): Omit<RecallIndexResult, keyof De
     }
   }
 
-  const sorted = [...entityMap.entries()].sort((a, b) => b[1].bestSimilarity - a[1].bestSimilarity);
+  // Entities keep the order of the rows they came from — `memories` is already
+  // in relevance order, and a Map preserves insertion order, so first-appearance
+  // IS that order. This used to re-sort by `bestSimilarity`, which was the same
+  // thing back when the merged set was itself sorted on the displayed value; it
+  // stopped being the same thing when ranking moved off `similarity` (D22), and
+  // `index` would have listed entities in a different order from the `full`
+  // answer to the identical query — while the tool description promises results
+  // are ordered by relevance. The displayed number is still the best similarity
+  // in the group, which is what makes it useful for deciding where to expand.
+  const sorted = [...entityMap.entries()];
 
   const lines = [`#I ${memories.length} results, ${sorted.length} entities`];
   for (const [name, { type, version_hash, obsCount, bestSimilarity }] of sorted) {

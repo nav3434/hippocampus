@@ -272,9 +272,11 @@ describe('Spreading activation', () => {
       rawCosine,
       'spread rows must report the raw cosine, not the damped composite'
     );
-    // The old value, for contrast: had this still been the composite, the
-    // assertion above would have failed. 0.5 decay alone puts it well clear.
-    assert.notEqual(spreadMatch.similarity, Math.round(rawCosine * 0.5 * 1000) / 1000);
+    // Deliberately no second "and it isn't the old composite" assertion here:
+    // at this fixture's recall count of 0 the old value was just `cosine * 0.5`,
+    // so such a check could only fail if the cosine rounded to zero — coverage
+    // it does not have, stated as coverage it does. The equality above is the
+    // guard, and it dies under the mutation that restores the composite.
   });
 
   test('spread: false is the default', async () => {

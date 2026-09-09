@@ -156,8 +156,9 @@ export function createMcpServer(): McpServer {
         .default(false)
         .describe(
           'Follow relationships 1 hop from matched entities and include related observations. Discovers contextually ' +
-          'connected memories. Related observations are dampened — the damping lowers where they RANK and raises the ' +
-          'bar they must clear to appear at all; it does not change the similarity reported for them.'
+          'connected memories. Related observations are dampened: the damping lowers where they RANK and sets the bar ' +
+          'they must clear to appear at all. It does not change the similarity reported for them, so a related ' +
+          'memory can be returned with a lower similarity than a directly-matched one would need.'
         ),
       format: z
         .enum(['full', 'compact', 'wire', 'index'])

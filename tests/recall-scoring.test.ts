@@ -86,16 +86,22 @@ describe('recall returns as many rows as it was asked for (D22)', () => {
     'Quarterly board pack for the accounting business',
   ];
 
+  // Its own entity type, so every query in this block is scoped to its own
+  // fixture. The file shares one database across five describe blocks, and a
+  // block that queries unscoped is correct only for as long as suites run in
+  // declaration order — which is not a property worth depending on.
+  const SLOT_TYPE = 'slot-fixture';
+
   let qualifying = 0;
   let queryVector: Float32Array;
 
   before(async () => {
     for (let i = 0; i < TEXTS.length; i++) {
-      await remember({ content: TEXTS[i], entity: `slot-e${i}`, type: 'note' });
+      await remember({ content: TEXTS[i], entity: `slot-e${i}`, type: SLOT_TYPE });
     }
 
     queryVector = await generateEmbedding(QUERY);
-    const all = semanticSearchWithVector(queryVector, { limit: 100 });
+    const all = semanticSearchWithVector(queryVector, { limit: 100, type: SLOT_TYPE });
 
     // Boost every row that sits BELOW the floor. These are exactly the rows
     // that can never be returned, so any slot one of them wins is a lost row.
@@ -108,7 +114,7 @@ describe('recall returns as many rows as it was asked for (D22)', () => {
   });
 
   test('precondition: the fixture straddles the floor in both directions', () => {
-    const all = semanticSearchWithVector(queryVector, { limit: 100 });
+    const all = semanticSearchWithVector(queryVector, { limit: 100, type: SLOT_TYPE });
     const below = all.filter(r => r.similarity < SIMILARITY_THRESHOLD);
     assert.ok(qualifying >= 2, `need >= 2 rows above the floor, got ${qualifying}`);
     assert.ok(below.length >= 1, `need >= 1 row below the floor, got ${below.length}`);
@@ -118,7 +124,7 @@ describe('recall returns as many rows as it was asked for (D22)', () => {
     // This is the unfixed mechanism, still callable: rank the whole set and
     // slice to `limit`. If no below-floor row makes the cut here, the fixture
     // never reaches the defect and the guard below proves nothing.
-    const unfloored = semanticSearchWithVector(queryVector, { limit: qualifying });
+    const unfloored = semanticSearchWithVector(queryVector, { limit: qualifying, type: SLOT_TYPE });
     const wasted = unfloored.filter(r => r.similarity < SIMILARITY_THRESHOLD);
     assert.ok(
       wasted.length >= 1,
@@ -130,6 +136,7 @@ describe('recall returns as many rows as it was asked for (D22)', () => {
   test('the floored search fills every slot with a qualifying row', () => {
     const floored = semanticSearchWithVector(queryVector, {
       limit: qualifying,
+      type: SLOT_TYPE,
       minSimilarity: SIMILARITY_THRESHOLD,
     });
     assert.equal(floored.length, qualifying);
@@ -142,6 +149,7 @@ describe('recall returns as many rows as it was asked for (D22)', () => {
     const result = await recall({
       query: QUERY,
       limit: qualifying,
+      type: SLOT_TYPE,
       spread: false,
       format: 'full',
     }) as { count: number; memories: Array<{ similarity?: number }> };
@@ -157,7 +165,7 @@ describe('recall returns as many rows as it was asked for (D22)', () => {
   });
 
   test('a limit below the qualifying count is still honoured exactly', async () => {
-    const result = await recall({ query: QUERY, limit: 2, spread: false, format: 'full' }) as { count: number };
+    const result = await recall({ query: QUERY, limit: 2, type: SLOT_TYPE, spread: false, format: 'full' }) as { count: number };
     assert.equal(result.count, 2);
   });
 });
@@ -178,6 +186,7 @@ describe('recall reports raw cosine in `similarity`, on both paths (D22)', () =>
 
   let spreadObsId = '';
   let spreadVector: Float32Array;
+  let directVector: Float32Array;
   let queryVector: Float32Array;
 
   before(async () => {
@@ -195,6 +204,7 @@ describe('recall reports raw cosine in `similarity`, on both paths (D22)', () =>
 
     queryVector = await generateEmbedding(QUERY);
     spreadVector = await generateEmbedding(SPREAD_TEXT);
+    directVector = await generateEmbedding(DIRECT_TEXT);
   });
 
   test('POSITIVE CONTROL: the old formula would report a similarity above 1.0', () => {
@@ -262,14 +272,120 @@ describe('recall reports raw cosine in `similarity`, on both paths (D22)', () =>
     const spread = result.memories.find(m => m.entity === 'sim-project');
     assert.ok(direct && spread, 'both rows should be present');
 
-    const sim = cosineSimilarity(queryVector, spreadVector);
-    const damped = sim * boostFor(SPREAD_RECALL_COUNT) * 1.0 * SPREAD_DECAY;
+    // The ORDERING assertion the name makes. Without this the test survived a
+    // mutation forcing every spread row to sort last — it only failed under the
+    // raw-cosine mutation, because it duplicated the assertion above it.
+    const directIdx = result.memories.findIndex(m => m.entity === 'sim-person');
+    const spreadIdx = result.memories.findIndex(m => m.entity === 'sim-project');
     assert.ok(
-      damped < sim * boostFor(SPREAD_RECALL_COUNT),
-      'the decay is not reducing the score it is applied to'
+      spreadIdx < directIdx,
+      `the spread hit ranked at ${spreadIdx}, behind the direct hit at ${directIdx} — ` +
+      'on this fixture its damped score is the larger of the two, so ranking it ' +
+      'lower means the decay is being treated as a subordination rule'
     );
-    // And the reported value is unaffected by the decay, which is the contract.
-    assert.equal(spread.similarity, round3(sim));
+
+    // PRECONDITION making that assertion meaningful: the damped spread score
+    // really does exceed the direct row's rank score on this fixture, so
+    // "spread first" is the arithmetic and not an accident of insertion order.
+    const sim = cosineSimilarity(queryVector, spreadVector);
+    const dampedSpread = sim * boostFor(SPREAD_RECALL_COUNT) * 1.0 * SPREAD_DECAY;
+    const directSim = cosineSimilarity(queryVector, directVector);
+    assert.ok(
+      dampedSpread > directSim,
+      `damped spread ${round3(dampedSpread)} does not exceed the direct rank ` +
+      `${round3(directSim)} — the fixture no longer shows what this test claims`
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A consequence of the fix, pinned rather than left to be rediscovered
+// ---------------------------------------------------------------------------
+
+describe('a spread row may report a similarity below the direct floor (D22)', () => {
+  // Not a defect, and not a change to which rows come back — but it is new, and
+  // it is the kind of thing a caller writing `similarity >= 0.15` would trip on.
+  //
+  // Spread rows are admitted on their DAMPED score, direct rows on raw cosine.
+  // Those two bars were never commensurable; before D22 the difference was
+  // invisible because the spread row DISPLAYED the damped value, which by
+  // construction cleared the floor. Now it displays the raw cosine, which need
+  // not. The set of rows returned is identical either way — only the number is
+  // honest now. Pinned so the next reader meets it as a decision.
+  const QUERY = 'winter cycling in Helsinki';
+  const ANCHOR_TYPE = 'floor-anchor';
+  const RELATED_TYPE = 'floor-related';
+  const ANCHOR_TEXT = 'Cycling all winter in Helsinki on studded tyres';
+  const WEAK_TEXT = 'Column-level encryption keys are rotated on a schedule';
+  // The band this fixture must sit in is `[0.15 / (boost * SPREAD_DECAY), 0.15)`
+  // — under the direct floor, over the damped bar — and the boost is what sets
+  // its width. This count is chosen for MARGIN, not realism: it centres the
+  // fixture with ~30% clearance on both sides, where a realistic count leaves
+  // a band a few percent wide that a change of embedding model would flip. The
+  // property is reachable at far lower counts; it is only harder to pin there.
+  // (The realism claims in this file belong to the `limit` suite, which runs at
+  // the recall count of 100 CLAUDE.md uses as its own worked example.)
+  const WEAK_RECALL_COUNT = 1_000_000_000_000;
+
+  let weakSim = 0;
+
+  before(async () => {
+    await remember({ content: ANCHOR_TEXT, entity: 'floor-anchor-e', type: ANCHOR_TYPE });
+    await remember({ content: WEAK_TEXT, entity: 'floor-related-e', type: RELATED_TYPE });
+    const anchor = findOrCreateEntity('floor-anchor-e', ANCHOR_TYPE);
+    const related = findOrCreateEntity('floor-related-e', RELATED_TYPE);
+    createRelationship(anchor.id, related.id, 'mentions');
+
+    const row = getDatabase()
+      .prepare('SELECT id FROM observations WHERE content = ?')
+      .get(WEAK_TEXT) as { id: string };
+    setRecallCount(row.id, WEAK_RECALL_COUNT);
+
+    const q = await generateEmbedding(QUERY);
+    weakSim = cosineSimilarity(q, await generateEmbedding(WEAK_TEXT));
+  });
+
+  test('precondition: the row is under the direct floor but over the damped bar', () => {
+    assert.ok(
+      weakSim < SIMILARITY_THRESHOLD,
+      `raw cosine ${round3(weakSim)} clears the direct floor — the fixture shows nothing`
+    );
+    const damped = weakSim * boostFor(WEAK_RECALL_COUNT) * 1.0 * SPREAD_DECAY;
+    assert.ok(
+      damped >= SIMILARITY_THRESHOLD,
+      `damped ${round3(damped)} does not clear the spread bar — the row would not be returned at all`
+    );
+  });
+
+  test('the row comes back, reporting its true cosine rather than the composite', async () => {
+    const result = await recall({
+      query: QUERY,
+      type: ANCHOR_TYPE,
+      spread: true,
+      format: 'full',
+    }) as { memories: Array<{ entity: string; similarity?: number }> };
+
+    const row = result.memories.find(m => m.entity === 'floor-related-e');
+    assert.ok(row, 'the spread row should still be returned — the inclusion rule did not change');
+    assert.equal(row.similarity, round3(weakSim));
+    assert.ok(
+      (row.similarity ?? 1) < SIMILARITY_THRESHOLD,
+      'this is the property under test: a returned row below the direct floor'
+    );
+  });
+
+  test('direct rows are still never below the floor', async () => {
+    const result = await recall({
+      query: QUERY,
+      type: ANCHOR_TYPE,
+      spread: false,
+      format: 'full',
+    }) as { memories: Array<{ similarity?: number }> };
+
+    for (const m of result.memories) {
+      if (m.similarity === undefined) continue;
+      assert.ok(m.similarity >= SIMILARITY_THRESHOLD, `direct row under the floor: ${m.similarity}`);
+    }
   });
 });
 
@@ -342,6 +458,44 @@ describe('the spread re-sort preserves the search ranking (D22)', () => {
     );
   });
 
+  test('format: index lists entities in the same order as format: full', async () => {
+    // The index formatter re-derived its own order from the displayed value.
+    // That was equivalent while the merged set was sorted on that value too,
+    // and stopped being equivalent when ranking moved off it — so the same
+    // query answered in two different orders depending on the format. This
+    // fixture is one where the two disagree, which is what makes it a test.
+    const opts = { query: QUERY, type: 'voyage', spread: true } as const;
+    const full = await recall({ ...opts, format: 'full' }) as {
+      memories: Array<{ entity: string; similarity?: number }>;
+    };
+    const index = await recall({ ...opts, format: 'index' }) as { text: string };
+
+    const fullOrder: string[] = [];
+    for (const m of full.memories) if (!fullOrder.includes(m.entity)) fullOrder.push(m.entity);
+    const indexOrder = index.text
+      .split('\n')
+      .slice(1) // drop the "#I N results, M entities" header
+      .map(line => line.split('|')[0]);
+
+    assert.deepEqual(indexOrder, fullOrder, 'index and full disagree about relevance order');
+
+    // POSITIVE CONTROL: the two orders are only distinguishable because this
+    // fixture's displayed similarities run the other way. Without this, an
+    // index formatter sorting by similarity would satisfy the assertion above.
+    const boosted = full.memories.find(m => m.entity === 'rank-weaker');
+    const unboosted = full.memories.find(m => m.entity === 'rank-stronger');
+    assert.ok(boosted && unboosted);
+    assert.ok(
+      (boosted.similarity ?? 0) < (unboosted.similarity ?? 0),
+      'fixture does not discriminate: sorting the index by similarity would give ' +
+      'the same order as following the ranked rows'
+    );
+    assert.ok(
+      fullOrder.indexOf('rank-weaker') < fullOrder.indexOf('rank-stronger'),
+      'the ranked order is not the one under test'
+    );
+  });
+
   test('POSITIVE CONTROL: the displayed values would sort the other way', async () => {
     // Two controls in one. (1) `spread: false` already ranks the boosted row
     // first, so the test above measures the re-sort rather than the search.
@@ -404,6 +558,48 @@ describe('keyword-fallback rows carry no similarity (D22)', () => {
     const row = result.memories.find(m => m.entity === NONSENSE_ENTITY);
     assert.ok(row, 'the keyword leg should have found it by entity name');
     assert.equal(row.similarity, undefined, 'a LIKE match has no cosine to report');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The floor itself must not fail toward absence
+// ---------------------------------------------------------------------------
+
+describe('an unusable minSimilarity throws rather than emptying the result (D22)', () => {
+  let queryVector: Float32Array;
+
+  before(async () => {
+    await remember({ content: 'A lighthouse keeper logs the weather each dawn', entity: 'floor-guard-e', type: 'note' });
+    queryVector = await generateEmbedding('lighthouse weather log');
+  });
+
+  test('POSITIVE CONTROL: without a floor the query does match something', () => {
+    assert.ok(
+      semanticSearchWithVector(queryVector, { limit: 10 }).length > 0,
+      'the query matches nothing at all, so an empty result would prove nothing'
+    );
+  });
+
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    test(`minSimilarity ${String(bad)} is an error, not an empty answer`, () => {
+      assert.throws(
+        () => semanticSearchWithVector(queryVector, { limit: 10, minSimilarity: bad }),
+        /minSimilarity must be a finite number/,
+        // The three differ in what they do, and are refused together because
+        // all three are a caller error rather than a request: NaN compares
+        // false against every row and +Infinity clears none, so both return []
+        // with no error — indistinguishable from an empty database, the failure
+        // D13 and D15 exist to prevent in this same options object. -Infinity
+        // is the harmless one (it filters nothing), refused because a floor
+        // nobody could have meant is worth a message, not a silent no-op.
+        `minSimilarity: ${String(bad)} silently returned a result set`
+      );
+    });
+  }
+
+  test('a finite floor still filters rather than throwing', () => {
+    assert.doesNotThrow(() => semanticSearchWithVector(queryVector, { limit: 10, minSimilarity: 0.9 }));
+    assert.doesNotThrow(() => semanticSearchWithVector(queryVector, { limit: 10, minSimilarity: 0 }));
   });
 });
 

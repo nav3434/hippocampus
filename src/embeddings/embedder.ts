@@ -4,7 +4,6 @@ import { assertStoredSinceBound } from '../db/timestamps.js';
 import { cosineSimilarity } from './similarity.js';
 
 const EMBEDDING_DIM = 384;
-const EMBEDDING_BYTES = EMBEDDING_DIM * 4; // Float32 = 4 bytes
 
 // Lazy-loaded pipeline
 let pipelineInstance: any = null;
@@ -127,6 +126,19 @@ export function getEmbeddingsByEntity(entityId?: string): StoredVector[] {
   }));
 }
 
+/**
+ * Decay-weighted scoring: `similarity * recallBoost * importance`, where
+ * `recallBoost = 1 + RECALL_BOOST_ALPHA * ln(1 + recall_count)`. A gentle nudge
+ * — similarity stays the dominant signal.
+ *
+ * Exported because `recall`'s spreading-activation path computes the same boost
+ * for rows this function never sees, and then merges the two sets into one
+ * ordering. That merge is only meaningful if both sides use this constant, and
+ * a private copy in each module is a silent drift waiting to happen (there was
+ * one, `SPREAD_ALPHA`, until D22).
+ */
+export const RECALL_BOOST_ALPHA = 0.1;
+
 export interface SemanticSearchResult {
   observation_id: string;
   entity_id: string;
@@ -146,9 +158,9 @@ export interface SemanticSearchResult {
   /**
    * The decay-weighted composite this function sorts by:
    * `similarity * recallBoost * importance`. UNBOUNDED above — `recallBoost` is
-   * `1 + 0.1 * ln(1 + recall_count)` with no cap and `importance` reaches
-   * `IMPORTANCE_MAX`, so this routinely exceeds 1 and is meaningless as a
-   * "similarity". It exists so a caller that MERGES these rows with rows scored
+   * `1 + RECALL_BOOST_ALPHA * ln(1 + recall_count)` with no cap — so it can
+   * exceed 1 and is meaningless as a "similarity". It exists so a caller that
+   * MERGES these rows with rows scored
    * some other way (recall's spreading-activation path) can re-sort the merged
    * set on the same scale the search itself used. Anything that reaches a
    * caller's caller should carry `similarity`, never this.
@@ -250,10 +262,6 @@ export function semanticSearchWithVector(
     entity_type: string | null;
   }>;
 
-  // Decay-weighted scoring: similarity * recency boost * importance
-  // ALPHA = 0.1 — gentle nudge, similarity stays dominant signal
-  const ALPHA = 0.1;
-
   const scored = rows.map(row => {
     const storedVector = new Float32Array(
       row.vector.buffer,
@@ -261,7 +269,7 @@ export function semanticSearchWithVector(
       EMBEDDING_DIM
     );
     const similarity = cosineSimilarity(queryVector, storedVector);
-    const recallBoost = 1 + ALPHA * Math.log(1 + (row.recall_count ?? 0));
+    const recallBoost = 1 + RECALL_BOOST_ALPHA * Math.log(1 + (row.recall_count ?? 0));
     const importance = row.importance ?? 1.0;
     const rank_score = similarity * recallBoost * importance;
     return {
@@ -282,9 +290,16 @@ export function semanticSearchWithVector(
   // boosted row that does not clear it never competes for one of the `limit`
   // slots. Applying it after the slice — which is what a caller filtering the
   // returned rows does — is what loses results.
-  const eligible = options?.minSimilarity === undefined
-    ? scored
-    : scored.filter(r => r.similarity >= options.minSimilarity!);
+  const floor = options?.minSimilarity;
+  if (floor !== undefined && !Number.isFinite(floor)) {
+    // A NaN floor drops every row and returns an empty set with no error — the
+    // same "silently returns nothing" failure `since` is asserted against two
+    // fields up (D13/D15). An empty result is indistinguishable from an empty
+    // database, so this throws instead. The value is safe to name: it is a
+    // caller-supplied number, never memory content.
+    throw new Error(`semanticSearchWithVector: minSimilarity must be a finite number, got ${String(floor)}`);
+  }
+  const eligible = floor === undefined ? scored : scored.filter(r => r.similarity >= floor);
 
   eligible.sort((a, b) => b.rank_score - a.rank_score);
   return eligible.slice(0, limit);
