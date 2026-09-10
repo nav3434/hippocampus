@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { searchObservations, touchRecalledObservations, type ObservationWithEntity } from '../../db/observations.js';
 import { findEntityByName, getEntityVersion } from '../../db/entities.js';
 import { getRelatedEntities } from '../../db/relationships.js';
-import { generateEmbedding, semanticSearchWithVector, getEmbeddingsByEntity, semanticSearch, type SemanticSearchResult } from '../../embeddings/embedder.js';
+import { generateEmbedding, semanticSearchWithVector, getEmbeddingsByEntity, semanticSearch, RECALL_BOOST_ALPHA, type SemanticSearchResult } from '../../embeddings/embedder.js';
 import { cosineSimilarity } from '../../embeddings/similarity.js';
 import { isAppendOnlyEntity } from '../../config.js';
 import { normalizeSinceBound, parseStoredTimestamp, SINCE_CONTRACT_ERROR } from '../../db/timestamps.js';
@@ -29,9 +29,19 @@ export const recallSchema = z.object({
 
 export type RecallInput = z.infer<typeof recallSchema>;
 
-const SIMILARITY_THRESHOLD = 0.15;
-const SPREAD_DECAY = 0.5;
-const SPREAD_ALPHA = 0.1;
+/**
+ * Raw-cosine floor for direct semantic hits. Exported so tests compute against
+ * the real value instead of a copy: a test that mirrors a constant drifts with
+ * it and reports nothing, which is what the first version of these guards did.
+ */
+export const SIMILARITY_THRESHOLD = 0.15;
+/**
+ * Damping applied to spreading-activation rows. Exported for the same reason.
+ * It does two jobs — it is the rank penalty that keeps related memories below
+ * directly-matched ones, and (because the threshold comparison is made on the
+ * damped value) it is also their entry bar.
+ */
+export const SPREAD_DECAY = 0.5;
 
 interface MemoryResult {
   observation_id: string;
@@ -41,10 +51,43 @@ interface MemoryResult {
   source: string | null;
   kind: string | null;
   remembered_at: string;
+  /**
+   * RAW cosine against the query, on EVERY path that computes one — the direct
+   * semantic search and the spreading-activation walk alike. It used to mean
+   * two different things in one response (D22): the direct path reported raw
+   * cosine while the spread path reported `sim * recallBoost * importance *
+   * SPREAD_DECAY` in the same field, so two rows of a single `spread: true`
+   * result were not comparable and the composite could exceed 1, which no
+   * cosine can. Ranking is done on a separate internal key — the pattern the
+   * direct search has always used internally, though as of D22 that function
+   * RETURNS its composite as `rank_score` rather than stripping it, because
+   * this file needs it to merge two differently-scored sets. Keeping the
+   * composite off the wire is therefore this file's job now, not the search's.
+   *
+   * Absent on keyword-fallback rows, where no vector comparison happened. That
+   * is the absence of a similarity, not a third meaning of one.
+   */
   similarity?: number;
   stale?: boolean;
   version_hash?: string | null;
 }
+
+/**
+ * A `MemoryResult` plus the key the merged set is ordered by — never returned.
+ * Stripped before the response is built. Note this is the LAST such barrier:
+ * `semanticSearchWithVector` used to strip its own composite at its exit and
+ * stopped when D22 needed to read it, so a future caller of that function is
+ * responsible for its own stripping. `rank_score` is named so a leak reads as
+ * a ranking detail rather than as a similarity, which is the least this can do.
+ *
+ * The scale is shared across every source so the merge is meaningful: the
+ * direct path contributes the search's own `rank_score`, the spread path the
+ * same composite damped by `SPREAD_DECAY`, and keyword rows a literal 0 (no
+ * vector was compared, so there is no score — they sort last, which is where
+ * the pre-D22 `?? 0` put them too, but now by statement rather than by the
+ * default value of a field whose meaning changed).
+ */
+type ScoredMemory = MemoryResult & { rank: number };
 
 /**
  * `degraded` is present on EVERY recall response, `false` on the healthy path,
@@ -117,6 +160,15 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
     type: input.type,
     since,
     kind: input.kind,
+    // The raw-similarity floor is pushed INTO the search so it applies before
+    // the sort-and-slice, rather than being applied to the rows that come back
+    // (D22). The search ranks by the boosted composite, so a row whose raw
+    // cosine is under this floor could out-rank a qualifying one, take one of
+    // the `limit` slots, and then be dropped by the filter below — `limit: 5`
+    // answering with 4 while a fifth qualifying row sat in the database, with
+    // nothing in the response to say so. Reachable on `recallBoost` alone, at
+    // the recall count of 100 CLAUDE.md uses as its own worked example.
+    minSimilarity: SIMILARITY_THRESHOLD,
   };
 
   let semanticResults: SemanticSearchResult[];
@@ -179,9 +231,21 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
 
   // Merge and deduplicate by observation ID
   const seen = new Set<string>();
-  const memories: MemoryResult[] = [];
+  const memories: ScoredMemory[] = [];
 
-  // Semantic results first (primary), filtered by threshold
+  // Semantic results first (primary). The threshold is now enforced inside the
+  // search (`minSimilarity` above), so this filter is a redundant guard rather
+  // than the mechanism — kept deliberately, so "no DIRECT row is returned below
+  // the floor" holds here whatever a future caller passes or a future search
+  // does, instead of resting on an argument two modules away.
+  //
+  // Scoped to direct rows on purpose. A spread row is admitted on its DAMPED
+  // score, so once `similarity` became the raw cosine a spread row can report a
+  // value under this floor (D22, and pinned in tests/recall-scoring.test.ts).
+  // That is the same set of rows spreading has always returned — the inclusion
+  // rule did not move — but the number shown for them did, and the two floors
+  // are no longer commensurable. Do not "restore" the invariant across both
+  // paths without deciding what `spread: true` should return.
   for (const r of semanticResults) {
     if (r.similarity < SIMILARITY_THRESHOLD) continue;
     if (!seen.has(r.observation_id)) {
@@ -195,15 +259,23 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
         kind: r.kind,
         remembered_at: r.created_at,
         similarity: Math.round(r.similarity * 1000) / 1000,
+        // The search's own composite, carried through unrounded. The spread
+        // re-sort below used to order these rows by raw cosine, silently
+        // discarding the boost the search had just ranked them by — so a
+        // heavily-recalled row was promoted by the search and demoted again by
+        // its caller, and only when `spread: true` (D22).
+        rank: r.rank_score,
       });
     }
   }
 
-  // Keyword results as fallback
+  // Keyword results as fallback. Rank 0: no vector was compared, so there is no
+  // score to place them by, and last is the honest position for a row that
+  // matched on a LIKE.
   for (const obs of keywordResults) {
     if (!seen.has(obs.id)) {
       seen.add(obs.id);
-      memories.push(formatObservation(obs));
+      memories.push({ ...formatObservation(obs), rank: 0 });
     }
   }
 
@@ -274,10 +346,24 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
           if (sinceMs !== undefined && parseStoredTimestamp(v.created_at) < sinceMs) continue;
 
           const sim = cosineSimilarity(queryVector, v.vector);
-          const recallBoost = 1 + SPREAD_ALPHA * Math.log(1 + (v.recall_count ?? 0));
+          const recallBoost = 1 + RECALL_BOOST_ALPHA * Math.log(1 + (v.recall_count ?? 0));
           const importance = v.importance ?? 1.0;
           const score = sim * recallBoost * importance * SPREAD_DECAY;
 
+          // The INCLUSION bar stays on the damped score, unchanged (D22).
+          // `SPREAD_DECAY` does two jobs here — a rank penalty, and an entry bar
+          // — and only the first is what this change is about. Comparing raw
+          // `sim` to the threshold instead would admit a whole class of spread
+          // rows that are currently excluded, which is a decision about what
+          // `spread: true` returns, not about what a number in the response
+          // means. Left for whoever wants to make it deliberately.
+          //
+          // Note the bar is NOT simply "twice the direct floor". In raw-cosine
+          // terms it is `SIMILARITY_THRESHOLD / (SPREAD_DECAY * recallBoost *
+          // importance)` — double only for an unboosted row at neutral
+          // importance, and LOWER than the direct floor once the multipliers
+          // grow. So a frequently-recalled spread row can be returned with a
+          // reported similarity under the direct floor.
           if (score >= SIMILARITY_THRESHOLD) {
             seen.add(v.observation_id);
             memories.push({
@@ -288,15 +374,27 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
               source: v.source,
               kind: v.kind,
               remembered_at: v.created_at,
-              similarity: Math.round(score * 1000) / 1000,
+              // Raw cosine, as on the direct path. This is the field that used
+              // to carry `score` — a composite, in the same key a sibling row
+              // filled with a plain cosine, and one that passes 1.0 outright
+              // once the multipliers do their job.
+              similarity: Math.round(sim * 1000) / 1000,
+              // ...while the damped composite keeps doing the ranking, so the
+              // decay still holds spread hits below direct ones. It just does
+              // it where a caller cannot mistake it for a similarity.
+              rank: score,
             });
           }
         }
       }
     }
 
-    // Re-sort all memories by similarity descending
-    memories.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
+    // Re-sort the merged set on the shared rank scale — the search's composite
+    // for direct hits, the same composite damped by SPREAD_DECAY for spread
+    // hits, 0 for keyword rows. Sorting on `similarity` here (raw cosine) would
+    // throw away both the boost the direct rows were ranked by and the damping
+    // that is the whole point of the decay.
+    memories.sort((a, b) => b.rank - a.rank);
   }
 
   // Reconsolidation hints: flag observations that may need updating
@@ -341,7 +439,13 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
     m.version_hash = versionCache.get(m.entity) ?? null;
   }
 
-  const limited = memories.slice(0, input.limit);
+  // Strip the internal rank key here, once, so every return path below is
+  // handed the wire shape and none of them can leak it. A single exit for the
+  // same reason the search used to have one — and it is the only one left,
+  // since D22 made the search return its composite instead of stripping it.
+  const limited: MemoryResult[] = memories
+    .slice(0, input.limit)
+    .map(({ rank, ...rest }) => rest);
 
   // Track access for recall-frequency analysis
   if (limited.length > 0) {
@@ -460,25 +564,43 @@ function formatIndex(memories: MemoryResult[]): Omit<RecallIndexResult, keyof De
     return { success: true, count: 0, entity_count: 0, text: '#I 0 results, 0 entities' };
   }
 
-  const entityMap = new Map<string, { type: string | null; version_hash: string | null; obsCount: number; bestSimilarity: number }>();
+  // `bestSimilarity` is null for an entity whose every row came from the keyword
+  // leg. It used to coalesce to 0, which prints `0.00` — a real-looking cosine,
+  // in the one format an AI reads to decide which entity to expand, for a row
+  // that was never compared to a vector at all. The field stays in place (the
+  // line is positional) and carries `-` instead, matching the `full` format's
+  // contract that an absent similarity means no comparison happened.
+  const entityMap = new Map<string, { type: string | null; version_hash: string | null; obsCount: number; bestSimilarity: number | null }>();
   for (const m of memories) {
     const existing = entityMap.get(m.entity);
-    const sim = m.similarity ?? 0;
+    const sim = m.similarity ?? null;
     if (existing) {
       existing.obsCount++;
-      if (sim > existing.bestSimilarity) existing.bestSimilarity = sim;
+      if (sim !== null && (existing.bestSimilarity === null || sim > existing.bestSimilarity)) {
+        existing.bestSimilarity = sim;
+      }
     } else {
       entityMap.set(m.entity, { type: m.type, version_hash: m.version_hash ?? null, obsCount: 1, bestSimilarity: sim });
     }
   }
 
-  const sorted = [...entityMap.entries()].sort((a, b) => b[1].bestSimilarity - a[1].bestSimilarity);
+  // Entities keep the order of the rows they came from — `memories` is already
+  // in relevance order, and a Map preserves insertion order, so first-appearance
+  // IS that order. This used to re-sort by `bestSimilarity`, which was the same
+  // thing back when the merged set was itself sorted on the displayed value; it
+  // stopped being the same thing when ranking moved off `similarity` (D22), and
+  // `index` would have listed entities in a different order from the `full`
+  // answer to the identical query — while the tool description promises results
+  // are ordered by relevance. The displayed number is still the best similarity
+  // in the group, which is what makes it useful for deciding where to expand.
+  const sorted = [...entityMap.entries()];
 
   const lines = [`#I ${memories.length} results, ${sorted.length} entities`];
   for (const [name, { type, version_hash, obsCount, bestSimilarity }] of sorted) {
     const typeStr = type ?? '';
     const hashStr = version_hash ? `|v:${version_hash.slice(0, 8)}` : '';
-    lines.push(`${name}|${typeStr}|${obsCount} obs|${bestSimilarity.toFixed(2)}${hashStr}`);
+    const simStr = bestSimilarity === null ? '-' : bestSimilarity.toFixed(2);
+    lines.push(`${name}|${typeStr}|${obsCount} obs|${simStr}${hashStr}`);
   }
 
   return {

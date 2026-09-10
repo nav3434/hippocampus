@@ -468,10 +468,19 @@ export function describeDegradation(index: RecallIndex): string | null {
  * by D17's tests, and the two conditions want different dispositions.
  *
  * NOT a completeness proof, and an earlier draft of this comment claimed it was.
- * `count` is what survived `recall`'s own `SIMILARITY_THRESHOLD = 0.15` filter
- * (`src/mcp/tools/recall.ts`), applied AFTER the search slices to the limit — so
- * a count below the limit does NOT mean the enumeration was exhaustive. It means
- * only that the slice was not full. Measured on prod 2026-09-02: `export`
+ * `count` is what survived `recall`'s `SIMILARITY_THRESHOLD = 0.15` floor
+ * (`src/mcp/tools/recall.ts`), and observations below that floor are absent
+ * from the count however much room the limit had — so a count below the limit
+ * does NOT mean the enumeration was exhaustive. It means the floor-clearing
+ * set fit.
+ *
+ * D22 sharpened what that sentence covers without changing its conclusion. The
+ * floor now runs INSIDE the search, before its slice, so a below-floor row can
+ * no longer occupy a slot and be discarded afterwards — which used to mean a
+ * short count could ALSO be under-delivery. It cannot now: on a non-degraded
+ * recall, `count < limit` implies the semantic leg returned everything that
+ * cleared the floor. What survives is the older and larger gap, that clearing
+ * the floor is not the same as existing. Measured on prod 2026-09-02: `export`
  * reports 27 observations across 14 agents, the same recall reports 22 — five
  * already dropped by the floor. No agent was lost only because each dropped
  * observation had a sibling above the line, and four agents currently hold

@@ -4,7 +4,6 @@ import { assertStoredSinceBound } from '../db/timestamps.js';
 import { cosineSimilarity } from './similarity.js';
 
 const EMBEDDING_DIM = 384;
-const EMBEDDING_BYTES = EMBEDDING_DIM * 4; // Float32 = 4 bytes
 
 // Lazy-loaded pipeline
 let pipelineInstance: any = null;
@@ -127,6 +126,19 @@ export function getEmbeddingsByEntity(entityId?: string): StoredVector[] {
   }));
 }
 
+/**
+ * Decay-weighted scoring: `similarity * recallBoost * importance`, where
+ * `recallBoost = 1 + RECALL_BOOST_ALPHA * ln(1 + recall_count)`. A gentle nudge
+ * — similarity stays the dominant signal.
+ *
+ * Exported because `recall`'s spreading-activation path computes the same boost
+ * for rows this function never sees, and then merges the two sets into one
+ * ordering. That merge is only meaningful if both sides use this constant, and
+ * a private copy in each module is a silent drift waiting to happen (there was
+ * one, `SPREAD_ALPHA`, until D22).
+ */
+export const RECALL_BOOST_ALPHA = 0.1;
+
 export interface SemanticSearchResult {
   observation_id: string;
   entity_id: string;
@@ -136,12 +148,44 @@ export interface SemanticSearchResult {
   source: string | null;
   kind: string | null;
   created_at: string;
+  /**
+   * RAW cosine between the query vector and the stored vector. Bounded by
+   * [-1, 1] and comparable across rows, which is what makes it the only thing
+   * safe to report to a caller. It is deliberately NOT what this function
+   * ranks by — see `rank_score`.
+   */
   similarity: number;
+  /**
+   * The decay-weighted composite this function sorts by:
+   * `similarity * recallBoost * importance`. UNBOUNDED above — `recallBoost` is
+   * `1 + RECALL_BOOST_ALPHA * ln(1 + recall_count)` with no cap — so it can
+   * exceed 1 and is meaningless as a "similarity". It exists so a caller that
+   * MERGES these rows with rows scored
+   * some other way (recall's spreading-activation path) can re-sort the merged
+   * set on the same scale the search itself used. Anything that reaches a
+   * caller's caller should carry `similarity`, never this.
+   */
+  rank_score: number;
 }
 
 export interface SemanticSearchOptions {
   limit?: number;
   type?: string;
+  /**
+   * Lower bound on RAW cosine similarity, applied BEFORE the sort-and-slice.
+   *
+   * Without it, a caller that slices to `limit` here and then applies its own
+   * raw-similarity floor gets fewer rows than it asked for, silently: this
+   * function ranks by `rank_score`, so a row whose raw cosine is under the
+   * caller's floor can still out-rank a qualifying one, occupy a slot, and
+   * then be dropped by the caller. The slot is not given back. Filtering here
+   * is exact rather than a guessed over-fetch factor, and it is free — every
+   * row is already loaded and scored in memory before the slice, so the floor
+   * costs one comparison per row and nothing else.
+   *
+   * Omit it to rank the whole set (the pre-existing behaviour).
+   */
+  minSimilarity?: number;
   /**
    * Lower bound on `created_at`, **already normalized** to the stored UTC form
    * `YYYY-MM-DD HH:MM:SS` — the comparison below is lexicographic, so any other
@@ -233,10 +277,6 @@ export function semanticSearchWithVector(
     entity_type: string | null;
   }>;
 
-  // Decay-weighted scoring: similarity * recency boost * importance
-  // ALPHA = 0.1 — gentle nudge, similarity stays dominant signal
-  const ALPHA = 0.1;
-
   const scored = rows.map(row => {
     const storedVector = new Float32Array(
       row.vector.buffer,
@@ -244,9 +284,9 @@ export function semanticSearchWithVector(
       EMBEDDING_DIM
     );
     const similarity = cosineSimilarity(queryVector, storedVector);
-    const recallBoost = 1 + ALPHA * Math.log(1 + (row.recall_count ?? 0));
+    const recallBoost = 1 + RECALL_BOOST_ALPHA * Math.log(1 + (row.recall_count ?? 0));
     const importance = row.importance ?? 1.0;
-    const finalScore = similarity * recallBoost * importance;
+    const rank_score = similarity * recallBoost * importance;
     return {
       observation_id: row.observation_id,
       entity_id: row.entity_id,
@@ -256,18 +296,41 @@ export function semanticSearchWithVector(
       source: row.source,
       kind: row.kind,
       created_at: row.created_at,
-      similarity, // raw cosine, for display
-      finalScore, // used for ranking only
+      similarity, // raw cosine, for display and for `minSimilarity`
+      rank_score, // boosted composite, for ranking only — see the interface
     };
   });
 
-  // Both keys are already computed for every row, so ordering by either is free
-  // — what is not free is slicing the wrong one, since the slice is final.
-  scored.sort((a, b) =>
-    options?.orderBy === 'similarity' ? b.similarity - a.similarity : b.finalScore - a.finalScore
+  // `minSimilarity` and `orderBy` are the two independent halves of one fact:
+  // THE SLICE IS FINAL. The floor decides which rows are allowed to compete for
+  // a slot; `orderBy` decides which key they compete on. Get either wrong and
+  // the row the caller wanted is gone before it ever sees the array — filtering
+  // after the slice loses rows that a boost promoted past the cut (D22), and
+  // re-picking the raw maximum out of a score-ordered slice re-picks from a
+  // window that weighting already chose (D21). Both keys are computed for every
+  // row either way, so neither costs anything but the comparison.
+  const floor = options?.minSimilarity;
+  if (floor !== undefined && !(Number.isFinite(floor) && floor >= -1 && floor <= 1)) {
+    // Refused as a caller error rather than honoured, in BOTH directions and
+    // for the same reason the range is checked at all: a cosine cannot leave
+    // [-1, 1], so a floor outside it cannot be what anyone meant. The two
+    // directions fail differently and only one is loud — a floor above 1 (or
+    // NaN) drops every row and returns an empty set with no error, which is
+    // indistinguishable from an empty database and is the exact failure `since`
+    // is asserted against two fields up (D13/D15); a floor below -1 merely
+    // filters nothing. Refusing both keeps the rule statable in one line
+    // instead of leaving the harmless half to look deliberate. The value is
+    // safe to name: it is a caller-supplied number, never memory content.
+    throw new Error(
+      `semanticSearchWithVector: minSimilarity must be a finite number in [-1, 1], got ${String(floor)}`
+    );
+  }
+  const eligible = floor === undefined ? scored : scored.filter(r => r.similarity >= floor);
+
+  eligible.sort((a, b) =>
+    options?.orderBy === 'similarity' ? b.similarity - a.similarity : b.rank_score - a.rank_score
   );
-  // Strip finalScore from results — internal ranking detail
-  return scored.slice(0, limit).map(({ finalScore, ...rest }) => rest);
+  return eligible.slice(0, limit);
 }
 
 export function deleteEmbedding(observationId: string): boolean {

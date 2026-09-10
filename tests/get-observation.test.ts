@@ -1,5 +1,5 @@
 /**
- * Tests for `get_observation` — the bounded read-by-id (D22).
+ * Tests for `get_observation` — the bounded read-by-id (D23).
  *
  * The gap: observation ids are handed out by `remember`, `recall` and `export`,
  * and both tools that ACCEPT an id destroy rows (`forget` deletes; `merge`
@@ -121,7 +121,7 @@ describe('get_observation is bounded where the prescribed recall re-read is not'
     // backslashes. (An earlier draft of this comment called the 1.20x stress
     // input "what a real harvest entry actually is", which is an order of
     // magnitude out — it was corrected in DECISIONS.md and the tool's own doc
-    // and survived here, which is why D22 says to sweep the whole surface.)
+    // and survived here, which is why D23 says to sweep the whole surface.)
     // The real claim is "the row it was asked for, plus a small fixed
     // envelope", and escaping belongs to the row.
     const size = wireSize(result);
@@ -358,7 +358,7 @@ describe('the ids get_observation advertises are working handles', () => {
 
 describe('the boundary get_observation does NOT move', () => {
   test('merge still caps combined content at 50,000 chars', async () => {
-    // D22 claims the honest consolidation boundary is "consolidate only when
+    // D23 claims the honest consolidation boundary is "consolidate only when
     // the combined text fits under 50,000". An earlier version of this test
     // hardcoded `const MERGE_CONTENT_CAP = 50_000` and asserted two rows
     // exceeded it — `merge` was never called and the cap never read, so
@@ -378,7 +378,7 @@ describe('the boundary get_observation does NOT move', () => {
     assert.equal(
       mergeTool!.inputSchema?.properties?.content?.maxLength,
       50_000,
-      'D22 cites 50,000 as the merge cap — if this changed, that decision needs revisiting'
+      'D23 cites 50,000 as the merge cap — if this changed, that decision needs revisiting'
     );
 
     // And the two-row reality the cap bites on: both readable, not combinable.
