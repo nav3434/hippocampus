@@ -26,6 +26,7 @@ const TOOL_PARAMS: Record<string, Set<string>> = {
   forget: new Set(['entity', 'observation_id', 'content']),
   update: new Set(['entity', 'old_content', 'new_content', 'kind']),
   context: new Set(['topic', 'depth']),
+  get_observation: new Set(['observation_id']),
   merge: new Set(['observation_ids', 'content']),
   merge_entities: new Set(['source_entities', 'target_entity', 'target_type']),
   consolidate: new Set(['entity', 'threshold', 'mode', 'age_days', 'include_append_only']),
@@ -63,6 +64,13 @@ const SEMANTIC_ALIASES: Record<string, Record<string, string>> = {
 // results, never a false "everything is new"); `format` only changes
 // rendering; `limit` cuts both ways against its default of 10. Strictness is
 // justified by the restricting params and costs nothing on the others.
+//   get_observation is deliberately NOT here, and the reason is the criterion
+//     rather than an oversight: its one param is what the tool acts ON, not a
+//     restriction on a wider default. Drop `observation_id` and there is
+//     nothing left to read, so Zod's required check rejects the call — the
+//     operation cannot widen, because absent the argument there is no
+//     operation. Contrast `forget({entity})`, which stays a valid call and
+//     means something far larger than what was asked for.
 // The map value is the consequence clause quoted back to the caller — what
 // dropping the argument would have changed, in that tool's own terms.
 // The error names the key only, never its value (observation content and

@@ -391,6 +391,7 @@ You're responsible for uptime and physical security. See [SECURITY.md](SECURITY.
 |------|-------------|
 | `remember` | Store a fact, preference, or piece of context. Optional `kind` classification (fact, decision, question, preference, or custom) and `importance` weighting. Reports overlapping observations so the AI can consolidate incrementally. Returns `version_hash` for cache invalidation. |
 | `recall` | Search memories by semantic similarity + keyword match. Filter by `type`, `kind`, `since`. Use `spread: true` to follow relationships and discover connected memories. Includes `version_hash` per entity in all formats. |
+| `get_observation` | Read ONE observation by its `observation_id` — the only id-taking tool that does not destroy anything. Use it to see what an id addresses before `merge` or `forget`. Bounded to the single row named; leaves `recall_count` untouched, unlike `recall`. |
 | `context` | Get everything about a topic — observations, relationships, related entities. Includes `version_hash`. |
 | `update` | Replace an existing observation with new content. Returns `version_hash`. |
 | `forget` | Permanently delete a memory or entity (secure deletion) |
@@ -523,8 +524,8 @@ src/
 ├── index.ts              # Hono server, MCP Streamable HTTP transport
 ├── config.ts             # Environment config with Zod validation
 ├── mcp/
-│   ├── server.ts         # MCP tool registration (11 tools)
-│   └── tools/            # remember, recall, forget, update, merge, merge_entities, context, consolidate, export, check_version, onboard
+│   ├── server.ts         # MCP tool registration (12 tools)
+│   └── tools/            # remember, recall, get_observation, forget, update, merge, merge_entities, context, consolidate, export, check_version, onboard
 ├── db/
 │   ├── index.ts          # SQLCipher initialization
 │   ├── schema.ts         # Schema + migrations

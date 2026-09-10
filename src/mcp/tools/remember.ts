@@ -18,7 +18,7 @@ const NEAR_MATCH_PREVIEW_CHARS = 200;
  * cannot tell it now holds a truncated one will compose a replacement from it.
  */
 const PREVIEW_NOTICE =
-  `. near_matches[].content is capped at ${NEAR_MATCH_PREVIEW_CHARS} chars — anything longer is a preview, not the stored text. Each match carries observation_id, created_at and kind to identify it; the full text is retrievable with recall for ordinary-sized observations (see the onboard tool for the consolidation sequence and where it stops working)`;
+  `. near_matches[].content is capped at ${NEAR_MATCH_PREVIEW_CHARS} chars — anything longer is a preview, not the stored text. Each match carries observation_id, created_at and kind to identify it; the full text is retrievable with get_observation, which takes that id and returns exactly that row (see the onboard tool for the consolidation sequence and where it stops working)`;
 
 export const rememberSchema = z.object({
   content: z
