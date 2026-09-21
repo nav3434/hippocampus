@@ -124,6 +124,25 @@ describe('/authorize', () => {
     assert.equal(location.searchParams.get('state'), 'a&b"c');
   });
 
+  test('a hostile-but-registered redirect_uri round-trips from the rendered form into an issued code', async () => {
+    // What a browser does: render the form, decode the hidden fields, post them.
+    // The POST re-check must still match the registered string exactly.
+    const page = await (await oauth.request(authorizeUrl(HOSTILE_REDIRECT, HOSTILE_STATE, HOSTILE_CHALLENGE))).text();
+    const res = await post({
+      client_id: hiddenValue(page, 'client_id'),
+      redirect_uri: hiddenValue(page, 'redirect_uri'),
+      code_challenge: hiddenValue(page, 'code_challenge'),
+      state: hiddenValue(page, 'state'),
+      username: 'test',
+      password: PASSWORD,
+    });
+    assert.equal(res.status, 302);
+    const location = new URL(res.headers.get('location')!);
+    assert.equal(location.href.startsWith(new URL(HOSTILE_REDIRECT).href), true);
+    assert.ok(location.searchParams.get('code'));
+    assert.equal(location.searchParams.get('state'), HOSTILE_STATE);
+  });
+
   test('POST refuses a redirect_uri the client never registered, even with valid credentials', async () => {
     const res = await post({
       client_id: clientId,

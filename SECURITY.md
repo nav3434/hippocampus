@@ -41,12 +41,12 @@ MCP standard. Required for cross-platform compatibility.
 - Protected Resource Metadata (RFC 9728)
 - Dynamic Client Registration (so Claude/ChatGPT auto-register)
 - Short-lived access tokens (1 hour), refresh tokens (30 days, single-use rotation)
-- Token audience scoped per instance (RFC 8707)
+- Tokens are opaque and valid only on the instance that issued them (no RFC 8707 resource indicators; no audience binding)
 - Self-contained auth server (single user, no external IdP dependency)
 
 **Endpoints:**
 ```
-GET  /.well-known/oauth-protected-resource
+GET  /.well-known/oauth-protected-resource/mcp
 GET  /.well-known/oauth-authorization-server
 GET  /authorize
 POST /authorize
