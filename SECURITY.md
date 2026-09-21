@@ -49,6 +49,7 @@ MCP standard. Required for cross-platform compatibility.
 GET  /.well-known/oauth-protected-resource
 GET  /.well-known/oauth-authorization-server
 GET  /authorize
+POST /authorize
 POST /token
 POST /register
 ```
@@ -189,7 +190,7 @@ cat > .env << 'EOF'
 HIPPO_PASSPHRASE=your-generated-passphrase
 HIPPO_PORT=3000
 HIPPO_OAUTH_USER=your-email@example.com
-HIPPO_OAUTH_PASSWORD_HASH=<bcrypt hash>
+HIPPO_OAUTH_PASSWORD_HASH=<SHA-256, base64url: see README for the one-liner>
 EOF
 
 # 9. Start

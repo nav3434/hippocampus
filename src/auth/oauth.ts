@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { html } from 'hono/html';
 import { randomUUID, createHash, timingSafeEqual } from 'crypto';
 import type { Context, Next } from 'hono';
 import { config } from '../config.js';
@@ -89,8 +90,11 @@ export function createOAuthRoutes(): Hono {
       return c.json({ error: 'invalid_request', error_description: 'redirect_uri not registered' }, 400);
     }
 
-    // Render simple login form
-    const html = `<!DOCTYPE html>
+    // Render simple login form. Built with `html`, which escapes every
+    // interpolation: `state` and `code_challenge` are not validated at all, and
+    // `/register` is open, so `redirect_uri` is whatever any caller registered.
+    // A plain template literal here was a reflected XSS on the password form.
+    return c.html(html`<!DOCTYPE html>
 <html><head><title>Hippocampus — Authorize</title>
 <style>body{font-family:system-ui;max-width:400px;margin:80px auto;padding:0 20px}
 h1{font-size:1.4em}input{width:100%;padding:8px;margin:6px 0;box-sizing:border-box}
@@ -104,8 +108,7 @@ button{padding:10px 24px;background:#333;color:white;border:none;cursor:pointer;
 <label>Username<input type="text" name="username" required></label>
 <label>Password<input type="password" name="password" required></label>
 <button type="submit">Authorize</button>
-</form></body></html>`;
-    return c.html(html);
+</form></body></html>`);
   });
 
   oauth.post('/authorize', async (c) => {
@@ -116,6 +119,13 @@ button{padding:10px 24px;background:#333;color:white;border:none;cursor:pointer;
     const state = body['state'] as string;
     const username = body['username'] as string;
     const password = body['password'] as string;
+
+    // Re-check what GET /authorize checked. This POST is the request that
+    // issues the code, and nothing ties it to a GET that validated the pair.
+    const client = clientId ? getClient(clientId) : undefined;
+    if (!client || !redirectUri || !client.redirect_uris.includes(redirectUri)) {
+      return c.json({ error: 'invalid_request', error_description: 'Unknown client_id or unregistered redirect_uri' }, 400);
+    }
 
     // Verify credentials
     if (!config.oauthUser || !config.oauthPasswordHash) {
