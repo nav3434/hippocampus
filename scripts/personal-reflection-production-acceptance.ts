@@ -351,7 +351,7 @@ async function run(): Promise<void> {
         const observationAbsent = verification.ok && verification.value?.success === false;
         if (!deletionReported || !observationAbsent) {
           failed = true;
-          report.cleanup.recovery.push(`Synthetic cleanup diagnostics: forget_ok=${forgotten.ok}; delete_success=${forgotten.value?.success === true}; entity_deleted=${deleted?.entity === true}; observation_count=${typeof deleted?.observations === 'number' ? deleted.observations : 'unknown'}; direct_read_absent=${observationAbsent}.`);
+          report.cleanup.recovery.push(`Synthetic cleanup diagnostics: forget_ok=${forgotten.ok}; delete_success=${forgotten.value?.success === true}; entity_deleted=${deleted?.entity === true}; observation_count=${typeof deleted?.observations === 'number' ? deleted.observations : 'unknown'}; direct_read_ok=${verification.ok}; direct_read_success=${verification.value?.success === true ? 'true' : verification.value?.success === false ? 'false' : 'unknown'}; direct_read_has_observation=${Object.hasOwn(verification.value ?? {}, 'observation')}.`);
         }
       }
       report.cleanup.status = failed ? 'failed' : 'complete';
