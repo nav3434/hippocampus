@@ -305,7 +305,7 @@ async function run(): Promise<void> {
     const wrongSensitivity = await call(client, 'personal_reflection_recall', { scope: 'personal-reflection', query: marker, limit: 1, mode: 'thematic-recall', consumer: 'personal-reflection', sensitivity: 'restricted' });
     const errors = [wrongScope.error, wrongConsumer.error, wrongSensitivity.error];
     if (wrongScope.ok || wrongConsumer.ok || wrongSensitivity.ok || !errors.every(Boolean)) throw new Error('negative-capability-check-failed');
-    setCheck('B', 'PASS', 'Synthetic UUID covered create, identical retry, same-version digest conflict, newer replacement, stale update/delete rejection, then exact cleanup with forget.');
+    setCheck('B', 'PASS', 'Synthetic UUID covered create, identical retry, same-version digest conflict, newer replacement, stale update/delete rejection, then cleanup with personal_reflection_delete and exact personal_reflection_get absence read-back.');
     setCheck('E', 'PASS', 'Recall returned only canonical_id and canonical_version fields; no text was returned.');
     if (isolated) {
       runnerCheckpoint = 'group-a-pre-ranking-trace';

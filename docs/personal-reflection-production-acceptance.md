@@ -2,7 +2,12 @@
 
 This runner sends MCP calls to an explicitly selected deployment and uses only fresh synthetic UUIDs and marker text. It requires an explicit execution mode (`live-safe` or `isolated-production-equivalent`), exact synthetic mode, an approved target, and a bearer token. It never prints a bearer token or stores synthetic statements, queries, or stored content in its report. The machine report contains only identity type/source, never a bearer-derived principal or OAuth client ID.
 
-**Merging this PR does not constitute production acceptance of scoped retrieval.** The harness covers only B, E, and part of F. A, C, D, and the remaining F checks stay BLOCKED until a separate controlled step resolves their documented evidence or safety requirements. `/v1/retrieval/export` remains disabled. The absence of GitHub status checks is not a CI pass.
+**Merging this PR does not constitute production acceptance of scoped retrieval.** Coverage depends on execution mode:
+
+- `live-safe`: B, E, and part of F are covered; A, C, and the remaining F checks stay BLOCKED until a separate controlled step resolves their documented evidence or safety requirements.
+- `isolated-production-equivalent`: A, B, C, E, and F may PASS; D remains BLOCKED because canonical lifecycle and resolution belong to `personal-system`.
+
+`/v1/retrieval/export` remains disabled. The absence of GitHub status checks is not a CI pass.
 
 Run from a reviewed checkout after installing the repository's locked dependencies:
 
