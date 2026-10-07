@@ -10,6 +10,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "test": "tsx --test tests/**/*.test.ts",
+    "acceptance:personal-reflection": "tsx scripts/personal-reflection-production-acceptance.ts",
     "sync-agents": "tsx scripts/sync-agents.ts"
   },
   "keywords": [
