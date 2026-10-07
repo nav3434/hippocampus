@@ -26,6 +26,7 @@ const cleanupGenerations = new Set<string>();
 const privateSyntheticValues = new Set<string>();
 let globalObservationId: string | undefined;
 let globalEntityName: string | undefined;
+let runnerCheckpoint = 'preflight';
 
 function parseReply(reply: Awaited<ReturnType<Client['callTool']>>): Reply {
   const content = Array.isArray(reply.content) ? reply.content as Array<{ type: string; text?: string }> : [];
@@ -177,6 +178,7 @@ async function run(): Promise<void> {
   let isolated = false;
   let token = '';
   try {
+    runnerCheckpoint = 'synthetic-mode-validation';
     requireSyntheticAcceptanceMode(process.env);
     const mode = acceptanceExecutionMode(process.env);
     isolated = mode === 'isolated-production-equivalent';
@@ -191,6 +193,7 @@ async function run(): Promise<void> {
     const transport = new StreamableHTTPClientTransport(target, { requestInit: { headers: { Authorization: `Bearer ${token}` } } });
     client = new Client({ name: 'hippocampus-personal-reflection-acceptance', version: '1.0.0' });
     await client.connect(transport);
+    runnerCheckpoint = 'unauthenticated-denial';
     const noAuthClient = new Client({ name: 'hippocampus-personal-reflection-unauthorized-check', version: '1.0.0' });
     let unauthDenied = false;
     try {
@@ -204,6 +207,7 @@ async function run(): Promise<void> {
     } finally {
       await noAuthClient.close().catch(() => undefined);
     }
+    runnerCheckpoint = 'authenticated-scope-status';
     const status = await call(client, 'personal_reflection_scope_status', { scope: 'personal-reflection' });
     if (!status.ok) {
       setCheck('F', 'BLOCKED', status.error === 'unauthorized'
@@ -217,6 +221,7 @@ async function run(): Promise<void> {
       setCheck('E', 'BLOCKED', 'The principal is not allowlisted; no records were created.');
       return;
     }
+    runnerCheckpoint = 'contract-status-validation';
     if (!validStatus(status.value)) {
       setCheck('F', 'FAIL', 'Scope status did not match contract 1.0; no writes were attempted.');
       setCheck('B', 'BLOCKED', 'Contract status mismatch prevented writes.');
@@ -224,6 +229,7 @@ async function run(): Promise<void> {
       return;
     }
     if (isolated) {
+      runnerCheckpoint = 'isolated-build-identity';
       const info = await call(client, 'personal_reflection_acceptance_info', {});
       const buildSha = process.env.HIPPO_ACCEPTANCE_BUILD_SHA;
       if (!info.ok || info.value?.mode !== 'isolated-v1' || info.value?.backend_build_sha !== buildSha || !/^[a-f0-9]{40}$/.test(buildSha ?? '')) {
@@ -236,6 +242,7 @@ async function run(): Promise<void> {
       throw new Error('unauthenticated-caller-not-denied');
     }
 
+    runnerCheckpoint = 'create-synthetic-record';
     const id = randomUUID();
     report.cleanup.synthetic_ids.push(id);
     const marker = `synthetic acceptance marker ${randomUUID()}`;
@@ -247,22 +254,28 @@ async function run(): Promise<void> {
     cleanupRecords.push({ canonical_id: id, canonical_version: 1 });
     const created = await call(client, 'personal_reflection_upsert', { scope: 'personal-reflection', record, operation_key: upsertKey(record) });
     if (!created.ok || created.value?.status !== 'created') throw new Error('create-failed');
+    runnerCheckpoint = 'idempotent-create-retry';
     const retry = await call(client, 'personal_reflection_upsert', { scope: 'personal-reflection', record, operation_key: upsertKey(record) });
     if (!retry.ok || retry.value?.canonical_id !== id) throw new Error('retry-failed');
     const conflictRecord = makeRecord(1, `${marker}; alternate synthetic statement`);
+    runnerCheckpoint = 'same-version-conflict';
     const sameVersion = await call(client, 'personal_reflection_upsert', { scope: 'personal-reflection', record: conflictRecord, operation_key: upsertKey(conflictRecord) });
     if (sameVersion.ok || sameVersion.error !== 'conflict') throw new Error('same-version-conflict-missing');
     const revised = makeRecord(2, `${marker}; synthetic revised private statement`);
     privateSyntheticValues.add(revised.content);
     record = revised;
+    runnerCheckpoint = 'newer-version-replacement';
     const update = await call(client, 'personal_reflection_upsert', { scope: 'personal-reflection', record: revised, operation_key: upsertKey(revised) });
     if (!update.ok || update.value?.status !== 'updated') throw new Error('update-failed');
     const stale = makeRecord(1, `${marker}; stale synthetic statement`);
+    runnerCheckpoint = 'stale-update-rejection';
     const staleUpdate = await call(client, 'personal_reflection_upsert', { scope: 'personal-reflection', record: stale, operation_key: upsertKey(stale) });
     if (staleUpdate.ok || staleUpdate.error !== 'conflict') throw new Error('stale-update-not-rejected');
+    runnerCheckpoint = 'stale-delete-rejection';
     const staleDelete = await call(client, 'personal_reflection_delete', { scope: 'personal-reflection', canonical_id: id, canonical_version: 1, operation_key: deleteKey(id, 1) });
     if (staleDelete.ok || staleDelete.error !== 'conflict') throw new Error('stale-delete-not-rejected');
 
+    runnerCheckpoint = 'scoped-recall-surface';
     const recall = await call(client, 'personal_reflection_recall', { scope: 'personal-reflection', query: marker, limit: 1,
       mode: 'thematic-recall', consumer: 'personal-reflection', sensitivity: 'private' });
     const rows = recall.value?.matches;
@@ -271,11 +284,13 @@ async function run(): Promise<void> {
       match.canonical_version !== 2 || Object.keys(match).sort().join(',') !== 'canonical_id,canonical_version' || JSON.stringify(recall.value).includes(marker)) {
       throw new Error('recall-surface-contract-failed');
     }
+    runnerCheckpoint = 'exact-readback';
     const readback = await call(client, 'personal_reflection_get', { scope: 'personal-reflection', canonical_id: id });
     const readRecord = readback.value?.record as Record<string, unknown> | undefined;
     if (!readback.ok || readback.value?.found !== true || readRecord?.canonical_version !== 2) throw new Error('exact-readback-failed');
     cleanupRecords[cleanupRecords.length - 1] = { canonical_id: id, canonical_version: 2 };
 
+    runnerCheckpoint = 'negative-capability-checks';
     const wrongScope = await call(client, 'personal_reflection_scope_status', { scope: 'global' });
     const wrongConsumer = await call(client, 'personal_reflection_recall', { scope: 'personal-reflection', query: marker, limit: 1, mode: 'thematic-recall', consumer: 'other', sensitivity: 'private' });
     const wrongSensitivity = await call(client, 'personal_reflection_recall', { scope: 'personal-reflection', query: marker, limit: 1, mode: 'thematic-recall', consumer: 'personal-reflection', sensitivity: 'restricted' });
@@ -284,8 +299,11 @@ async function run(): Promise<void> {
     setCheck('B', 'PASS', 'Synthetic UUID covered create, identical retry, same-version digest conflict, newer replacement, stale update/delete rejection, then cleanup with exact read-back.');
     setCheck('E', 'PASS', 'Recall returned only canonical_id and canonical_version; synthetic narrative, provenance, rationale, restricted, practical, and unavailable markers were absent.');
     if (isolated) {
+      runnerCheckpoint = 'group-a-pre-ranking-trace';
       await runIsolatedA(client, record.content, id);
+      runnerCheckpoint = 'group-c-rebuild-lifecycle';
       await runIsolatedC(client, id);
+      runnerCheckpoint = 'group-f-fault-injection';
       await runIsolatedF(client, marker, token);
     } else {
       report.checks.F = { status: 'BLOCKED', evidence: [
@@ -294,12 +312,12 @@ async function run(): Promise<void> {
       ] };
     }
   } catch {
-    if (report.checks.B.status === 'NOT_RUN') setCheck('B', record ? 'FAIL' : 'BLOCKED', record ? 'Synthetic lifecycle failed; server response details suppressed.' : 'Preflight or MCP setup stopped before a synthetic record was written.');
-    if (report.checks.E.status === 'NOT_RUN') setCheck('E', record ? 'FAIL' : 'BLOCKED', record ? 'Recall surface failed; server response details suppressed.' : 'Preflight or MCP setup stopped before a synthetic record was written.');
+    if (report.checks.B.status === 'NOT_RUN') setCheck('B', record ? 'FAIL' : 'BLOCKED', record ? `Synthetic lifecycle failed at ${runnerCheckpoint}; server response details suppressed.` : 'Preflight or MCP setup stopped before a synthetic record was written.');
+    if (report.checks.E.status === 'NOT_RUN') setCheck('E', record ? 'FAIL' : 'BLOCKED', record ? `Recall/read-back failed at ${runnerCheckpoint}; server response details suppressed.` : 'Preflight or MCP setup stopped before a synthetic record was written.');
     if (report.checks.F.status === 'NOT_RUN') setCheck('F', 'BLOCKED', 'Preflight or MCP setup failed; server response details suppressed.');
-    if (isolated && report.checks.A.status === 'BLOCKED') setCheck('A', 'FAIL', 'Isolated pre-ranking candidate trace did not satisfy the required scope proof; details suppressed.');
-    if (isolated && report.checks.C.status === 'BLOCKED') setCheck('C', 'FAIL', 'Isolated rebuild lifecycle proof did not satisfy the contract; details suppressed.');
-    if (isolated && report.checks.F.status === 'NOT_RUN') setCheck('F', 'FAIL', 'Isolated fail-closed fault cases did not all pass; details suppressed.');
+    if (isolated && report.checks.A.status === 'BLOCKED') setCheck('A', 'FAIL', `Isolated candidate trace failed at ${runnerCheckpoint}; details suppressed.`);
+    if (isolated && report.checks.C.status === 'BLOCKED') setCheck('C', 'FAIL', `Isolated rebuild lifecycle failed at ${runnerCheckpoint}; details suppressed.`);
+    if (isolated && report.checks.F.status === 'NOT_RUN') setCheck('F', 'FAIL', `Isolated fail-closed checks did not run past ${runnerCheckpoint}; details suppressed.`);
   } finally {
     if (client && cleanupRecords.length > 0) {
       let failed = false;
