@@ -72,6 +72,9 @@ const configSchema = z.object({
   // that merely forwards the variable without setting it. Disabling is possible,
   // but it has to be typed out.
   appendOnlyPrefixes: z.string().default(DEFAULT_APPEND_ONLY_PREFIXES).transform(parseAppendOnlyPrefixes),
+  personalReflectionPrincipals: z.string().default('').transform((raw) =>
+    raw.split(',').map((principal) => principal.trim()).filter(Boolean)
+  ),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -92,6 +95,7 @@ function loadConfig(): Config {
     transformersCache: process.env.TRANSFORMERS_CACHE,
     contextMaxObservations: process.env.HIPPO_CONTEXT_MAX_OBSERVATIONS,
     appendOnlyPrefixes: process.env.HIPPO_APPEND_ONLY_PREFIXES,
+    personalReflectionPrincipals: process.env.HIPPO_PERSONAL_REFLECTION_PRINCIPALS,
   });
 
   if (!result.success) {

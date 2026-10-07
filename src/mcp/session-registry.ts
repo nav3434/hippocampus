@@ -51,6 +51,11 @@ export class SessionRegistry<T extends SessionTransport> {
     return this.entries.size;
   }
 
+  /** Look up without extending the session lifetime. */
+  peek(sessionId: string): T | undefined {
+    return this.entries.get(sessionId)?.transport;
+  }
+
   /** Look up an active session and stamp it as just-used. */
   touch(sessionId: string): T | undefined {
     const entry = this.entries.get(sessionId);

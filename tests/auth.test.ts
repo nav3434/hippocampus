@@ -35,6 +35,7 @@ function makeCtx(authHeader?: string) {
   const headers = new Map<string, string>();
   if (authHeader) headers.set('authorization', authHeader);
   const responseHeaders = new Map<string, string>();
+  const values = new Map<string, unknown>();
   let jsonBody: unknown = null;
   let jsonStatus: number | null = null;
 
@@ -45,6 +46,8 @@ function makeCtx(authHeader?: string) {
     header: (name: string, value: string) => {
       responseHeaders.set(name, value);
     },
+    set: (name: string, value: unknown) => { values.set(name, value); },
+    get: (name: string) => values.get(name),
     json: (body: unknown, status?: number) => {
       jsonBody = body;
       jsonStatus = status ?? 200;
@@ -55,6 +58,7 @@ function makeCtx(authHeader?: string) {
   return {
     ctx,
     getResponse: () => ({ body: jsonBody, status: jsonStatus, headers: responseHeaders }),
+    getValue: (name: string) => values.get(name),
   };
 }
 
@@ -78,11 +82,13 @@ describe('bearerAuth with agent token fallback', () => {
   });
 
   test('accepts valid agent token', async () => {
-    const { ctx } = makeCtx(`Bearer ${'a'.repeat(64)}`);
+    const { ctx, getValue } = makeCtx(`Bearer ${'a'.repeat(64)}`);
     const middleware = bearerAuth();
     let nextCalled = false;
     await middleware(ctx as any, async () => { nextCalled = true; });
     assert.equal(nextCalled, true);
+    const { createHash } = await import('node:crypto');
+    assert.equal(getValue('authenticatedPrincipal'), `agent:${createHash('sha256').update('a'.repeat(64)).digest('hex')}`);
   });
 
   test('rejects agent token with different length (length gate)', async () => {

@@ -571,8 +571,8 @@ describe('TOOL_PARAMS drift guard', () => {
     // STRICT_TOOLS is the third hand-maintained map of tool names in this
     // module and the only one whose drift fails SILENTLY: a typo'd key simply
     // stops being strict, which is the silent widening this whole mechanism
-    // exists to close, reintroduced with a green suite. Today's two entries
-    // are pinned by their own behaviour tests; this is for the next one.
+    // exists to close, reintroduced with a green suite. The behaviour tests
+    // pin these strict tools; this check protects future additions.
     for (const [tool, consequence] of _internal.STRICT_TOOLS) {
       assert.ok(
         Object.hasOwn(_internal.TOOL_PARAMS, tool),

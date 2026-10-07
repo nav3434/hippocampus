@@ -33,6 +33,14 @@ const TOOL_PARAMS: Record<string, Set<string>> = {
   export: new Set(['format', 'entity', 'type']),
   check_version: new Set(['entity', 'version_hash']),
   onboard: new Set(['source']),
+  personal_reflection_scope_status: new Set(['scope']),
+  personal_reflection_upsert: new Set(['scope', 'record', 'operation_key', 'generation']),
+  personal_reflection_get: new Set(['scope', 'canonical_id']),
+  personal_reflection_delete: new Set(['scope', 'canonical_id', 'canonical_version', 'operation_key']),
+  personal_reflection_recall: new Set(['scope', 'query', 'limit', 'mode', 'consumer', 'sensitivity']),
+  personal_reflection_rebuild_begin: new Set(['scope', 'generation', 'record_count', 'manifest_digest']),
+  personal_reflection_rebuild_activate: new Set(['scope', 'generation', 'record_count', 'manifest_digest']),
+  personal_reflection_rebuild_abort: new Set(['scope', 'generation']),
 };
 
 // Semantic aliases: different param names that mean the same canonical thing.
@@ -78,6 +86,14 @@ const SEMANTIC_ALIASES: Record<string, Record<string, string>> = {
 const STRICT_TOOLS = new Map<string, string>([
   ['forget', 'dropping it could change what gets deleted'],
   ['recall', 'dropping it could change what gets returned'],
+  ['personal_reflection_scope_status', 'dropping it could change what gets requested'],
+  ['personal_reflection_upsert', 'dropping it could change what gets stored'],
+  ['personal_reflection_get', 'dropping it could change what gets read'],
+  ['personal_reflection_delete', 'dropping it could change what gets deleted'],
+  ['personal_reflection_recall', 'dropping it could change what gets returned'],
+  ['personal_reflection_rebuild_begin', 'dropping it could change what gets staged'],
+  ['personal_reflection_rebuild_activate', 'dropping it could change what gets activated'],
+  ['personal_reflection_rebuild_abort', 'dropping it could change what gets aborted'],
 ]);
 
 // Every map above is a plain object literal, so a bare `obj[key]` or `key in

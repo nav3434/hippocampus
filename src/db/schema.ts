@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3-multiple-ciphers';
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const SCHEMA_V1_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -102,6 +102,67 @@ CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expires ON oauth_tokens(expires_at);
 CREATE INDEX IF NOT EXISTS idx_oauth_auth_codes_expires ON oauth_auth_codes(expires_at);
 `;
 
+// Personal Reflection stays in its own namespace and generation-specific
+// tables; it is never represented as an entity/observation or included in the
+// legacy global embeddings table.
+const SCHEMA_V8_SQL = `
+CREATE TABLE IF NOT EXISTS personal_reflection_generations (
+  generation_id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL CHECK (scope = 'personal-reflection'),
+  status TEXT NOT NULL CHECK (status IN ('inactive', 'active', 'retired')),
+  record_count INTEGER NOT NULL CHECK (record_count >= 0),
+  manifest_digest TEXT NOT NULL CHECK (length(manifest_digest) = 64),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_one_active_generation
+  ON personal_reflection_generations(scope) WHERE status = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_one_inactive_generation
+  ON personal_reflection_generations(scope) WHERE status = 'inactive';
+
+CREATE TABLE IF NOT EXISTS personal_reflection_scope_state (
+  scope TEXT PRIMARY KEY CHECK (scope = 'personal-reflection'),
+  active_generation_id TEXT REFERENCES personal_reflection_generations(generation_id)
+);
+
+CREATE TABLE IF NOT EXISTS personal_reflection_records (
+  scope TEXT NOT NULL CHECK (scope = 'personal-reflection'),
+  generation_id TEXT NOT NULL REFERENCES personal_reflection_generations(generation_id) ON DELETE CASCADE,
+  canonical_id TEXT NOT NULL,
+  canonical_version INTEGER NOT NULL CHECK (canonical_version > 0),
+  content TEXT NOT NULL,
+  payload_digest TEXT NOT NULL CHECK (length(payload_digest) = 64),
+  sensitivity TEXT NOT NULL DEFAULT 'private' CHECK (sensitivity = 'private'),
+  PRIMARY KEY (scope, generation_id, canonical_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_records_identity
+  ON personal_reflection_records(scope, canonical_id);
+
+CREATE TABLE IF NOT EXISTS personal_reflection_embeddings (
+  scope TEXT NOT NULL CHECK (scope = 'personal-reflection'),
+  generation_id TEXT NOT NULL,
+  canonical_id TEXT NOT NULL,
+  vector BLOB NOT NULL CHECK (length(vector) = 1536),
+  PRIMARY KEY (scope, generation_id, canonical_id),
+  FOREIGN KEY (scope, generation_id, canonical_id)
+    REFERENCES personal_reflection_records(scope, generation_id, canonical_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS personal_reflection_operations (
+  principal_id TEXT NOT NULL,
+  operation_key TEXT NOT NULL CHECK (length(operation_key) = 64),
+  operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
+  scope TEXT NOT NULL CHECK (scope = 'personal-reflection'),
+  canonical_id TEXT NOT NULL,
+  canonical_version INTEGER NOT NULL CHECK (canonical_version > 0),
+  payload_digest TEXT NOT NULL CHECK (length(payload_digest) = 64),
+  generation_id TEXT,
+  response_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (principal_id, operation_key)
+);
+`;
+
 export function initializeSchema(db: Database.Database): void {
   db.exec(SCHEMA_V1_SQL);
 
@@ -139,6 +200,12 @@ export function initializeSchema(db: Database.Database): void {
   if (currentVersion < 7) {
     // V7: persist OAuth state (clients, auth codes, tokens) to survive container restarts
     db.exec(SCHEMA_V7_SQL);
+  }
+
+  if (currentVersion < 8) {
+    // V8 is additive. Existing global tables and their indexes are untouched;
+    // the new namespace remains empty until an authorized scoped upsert.
+    db.exec(SCHEMA_V8_SQL);
   }
 
   if (!versionRow) {

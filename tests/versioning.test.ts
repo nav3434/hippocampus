@@ -39,11 +39,11 @@ after(() => {
 // Schema V6 migration
 // ---------------------------------------------------------------------------
 
-describe('Schema V7 migration', () => {
-  test('schema version is 7', () => {
+describe('Schema V8 migration', () => {
+  test('schema version is 8', () => {
     const db = getDatabase();
     const version = getSchemaVersion(db);
-    assert.equal(version, 7);
+    assert.equal(version, 8);
   });
 
   test('entities table has version_hash and version_at columns', () => {
@@ -52,6 +52,18 @@ describe('Schema V7 migration', () => {
     const columnNames = columns.map(c => c.name);
     assert.ok(columnNames.includes('version_hash'), 'Should have version_hash column');
     assert.ok(columnNames.includes('version_at'), 'Should have version_at column');
+  });
+
+  test('Personal Reflection storage is additive and isolated from global memory tables', () => {
+    const db = getDatabase();
+    const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'
+      AND name LIKE 'personal_reflection_%' ORDER BY name`).all() as Array<{ name: string }>;
+    assert.deepEqual(tables.map(({ name }) => name), [
+      'personal_reflection_embeddings', 'personal_reflection_generations',
+      'personal_reflection_operations', 'personal_reflection_records', 'personal_reflection_scope_state',
+    ]);
+    const entities = db.prepare("SELECT count(*) AS n FROM entities WHERE name LIKE 'personal-reflection:%'").get() as { n: number };
+    assert.equal(entities.n, 0, 'scoped data does not enter entities');
   });
 });
 

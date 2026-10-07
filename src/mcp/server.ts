@@ -16,8 +16,9 @@ import { onboard } from './tools/onboard.js';
 import { registerContextResources } from './resources/context.js';
 import { normalizeParams } from './param-normalization.js';
 import { IMPORTANCE_MAX, IMPORTANCE_MIN, IMPORTANCE_NEUTRAL } from '../db/observations.js';
+import { registerPersonalReflectionTools } from './tools/personal-reflection.js';
 
-export function createMcpServer(): McpServer {
+export function createMcpServer(principalId = 'anonymous'): McpServer {
   const server = new McpServer({
     name: 'hippocampus',
     version: VERSION,
@@ -681,6 +682,8 @@ export function createMcpServer(): McpServer {
 
   // Resources — proactive context for warm-start AI sessions
   registerContextResources(server);
+
+  registerPersonalReflectionTools(server, principalId);
 
   // Lenient inbound param-name handling — see param-normalization.ts.
   installParamNormalization(server);
