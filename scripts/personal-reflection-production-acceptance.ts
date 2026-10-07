@@ -306,7 +306,7 @@ async function run(): Promise<void> {
     const errors = [wrongScope.error, wrongConsumer.error, wrongSensitivity.error];
     if (wrongScope.ok || wrongConsumer.ok || wrongSensitivity.ok || !errors.every(Boolean)) throw new Error('negative-capability-check-failed');
     setCheck('B', 'PASS', 'Synthetic UUID covered create, identical retry, same-version digest conflict, newer replacement, stale update/delete rejection, then cleanup with exact read-back.');
-    setCheck('E', 'PASS', 'Recall returned only canonical_id and canonical_version; synthetic narrative, provenance, rationale, restricted, practical, and unavailable markers were absent.');
+    setCheck('E', 'PASS', 'Recall returned only canonical_id and canonical_version fields; no text was returned.');
     if (isolated) {
       runnerCheckpoint = 'group-a-pre-ranking-trace';
       await runIsolatedA(client, record.content, id);
