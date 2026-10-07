@@ -346,13 +346,11 @@ async function run(): Promise<void> {
       if (globalObservationId) {
         const forgotten = await call(client, 'forget', { entity: globalEntityName });
         const deleted = forgotten.value?.deleted as Record<string, unknown> | undefined;
-        const verification = await call(client, 'recall', { query: privateSyntheticValues.values().next().value ?? 'synthetic acceptance marker',
-          limit: 50, spread: false, format: 'full' });
-        const memories = Array.isArray(verification.value?.memories) ? verification.value.memories as Array<Record<string, unknown>> : [];
+        const verification = await call(client, 'get_observation', { observation_id: globalObservationId });
         if (!forgotten.ok || forgotten.value?.success !== true || deleted?.entity !== true ||
-            deleted.observations !== 1 || !verification.ok || memories.some((memory) => memory.observation_id === globalObservationId)) {
+            deleted.observations !== 1 || !verification.ok || verification.value?.success !== false) {
           failed = true;
-          report.cleanup.recovery.push(`Forget only synthetic entity ${globalEntityName} with the forget tool, then run a synthetic-query recall to verify the observation is absent.`);
+          report.cleanup.recovery.push(`Forget only synthetic entity ${globalEntityName} with the forget tool, then use get_observation on its UUID and verify success=false.`);
         }
       }
       report.cleanup.status = failed ? 'failed' : 'complete';
