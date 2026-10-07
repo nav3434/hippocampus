@@ -253,7 +253,16 @@ async function run(): Promise<void> {
     privateSyntheticValues.add(record.content);
     cleanupRecords.push({ canonical_id: id, canonical_version: 1 });
     const created = await call(client, 'personal_reflection_upsert', { scope: 'personal-reflection', record, operation_key: upsertKey(record) });
-    if (!created.ok || created.value?.status !== 'created') throw new Error('create-failed');
+    if (!created.ok) {
+      const safeError = ['unauthorized', 'invalid_scope', 'invalid_request', 'conflict', 'unavailable', 'malformed-response', 'tool-error']
+        .includes(created.error ?? '') ? created.error : 'unexpected';
+      runnerCheckpoint = `initial-upsert-${safeError}`;
+      throw new Error('create-failed');
+    }
+    if (created.value?.status !== 'created') {
+      runnerCheckpoint = 'initial-upsert-unexpected-status';
+      throw new Error('create-failed');
+    }
     runnerCheckpoint = 'idempotent-create-retry';
     const retry = await call(client, 'personal_reflection_upsert', { scope: 'personal-reflection', record, operation_key: upsertKey(record) });
     if (!retry.ok || retry.value?.canonical_id !== id) throw new Error('retry-failed');
