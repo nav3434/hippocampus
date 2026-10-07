@@ -19,6 +19,43 @@ Remove-Item Env:HIPPO_ACCEPTANCE_BEARER_TOKEN
 
 The JSON output has a PASS/FAIL/BLOCKED/NOT_RUN result for each contract group A-F. A nonzero exit code means at least one group failed, is blocked, or synthetic cleanup failed. Do not treat BLOCKED as acceptance or use `/v1/retrieval/export` as a workaround.
 
+## Docker acceptance image
+
+The acceptance runner is packaged in a separate `personal-reflection-acceptance` stage. The production runtime stage does not include the runner or its scripts. Build and tag the client-only image from the repository root; this requires Docker on the host, not Node.js or npm:
+
+```sh
+docker build --target personal-reflection-acceptance -t hippocampus-personal-reflection-acceptance:local .
+```
+
+To verify the image and fail-closed preflight without credentials or network access, run it without a bearer token. It should emit its machine-readable blocked report and exit nonzero before connecting or writing:
+
+```sh
+docker run --rm \
+  -e HIPPO_ACCEPTANCE_MODE=synthetic-only \
+  -e HIPPO_ACCEPTANCE_TARGET_URL=https://acceptance.invalid/mcp \
+  -e HIPPO_ACCEPTANCE_AUTH_KIND=agent \
+  hippocampus-personal-reflection-acceptance:local
+```
+
+For an authorized controlled run, pass credentials through the Docker client's environment forwarding rather than placing a bearer value in command history:
+
+```sh
+read -r -s -p 'Approved Hippocampus bearer token: ' HIPPO_ACCEPTANCE_BEARER_TOKEN; echo
+export HIPPO_ACCEPTANCE_BEARER_TOKEN
+export HIPPO_ACCEPTANCE_MODE=synthetic-only
+export HIPPO_ACCEPTANCE_TARGET_URL=https://<approved-host>/mcp
+export HIPPO_ACCEPTANCE_AUTH_KIND=agent # agent, legacy, or oauth
+docker run --rm \
+  --env HIPPO_ACCEPTANCE_BEARER_TOKEN \
+  --env HIPPO_ACCEPTANCE_MODE \
+  --env HIPPO_ACCEPTANCE_TARGET_URL \
+  --env HIPPO_ACCEPTANCE_AUTH_KIND \
+  hippocampus-personal-reflection-acceptance:local
+unset HIPPO_ACCEPTANCE_BEARER_TOKEN HIPPO_ACCEPTANCE_MODE HIPPO_ACCEPTANCE_TARGET_URL HIPPO_ACCEPTANCE_AUTH_KIND
+```
+
+The image has no default target or credentials. The target must be explicitly approved, and this command does not deploy or modify the Hippocampus service.
+
 ## Authentication identity
 
 The server assigns `oauth:<stored client_id>` to a valid OAuth access token. A valid configured agent bearer receives `agent:<lowercase SHA-256 hex of the exact bearer>`. In legacy single-token mode, `HIPPO_TOKEN` receives `legacy:<lowercase SHA-256 hex of that token>`. The MCP session is bound to the principal that initialized it; subsequent requests with a different authenticated principal are rejected. The runner report contains only `identity_type` and `identity_source`; it does not calculate or emit the full derived principal, raw bearer, or OAuth client ID. To configure an allowlist in a separately reviewed change, use the exact principal from the existing service identity: verify the registered OAuth client ID server-side, or compute `agent:`/`legacy:` plus SHA-256 of the exact configured token in a trusted local process without printing the token. If the OAuth identity cannot be verified, do not allowlist it. Never paste the raw bearer into the allowlist.

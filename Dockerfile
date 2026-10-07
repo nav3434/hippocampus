@@ -21,6 +21,21 @@ COPY src ./src
 
 RUN npm run build
 
+# Separate client-only image for the Personal Reflection acceptance runner.
+# It reuses builder dependencies (including tsx) but does not copy the server,
+# application source, build tools, or production runtime configuration.
+FROM node:20-slim AS personal-reflection-acceptance
+
+WORKDIR /app
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
+COPY scripts/personal-reflection-production-acceptance.ts ./scripts/personal-reflection-production-acceptance.ts
+COPY scripts/personal-reflection-acceptance-core.ts ./scripts/personal-reflection-acceptance-core.ts
+
+CMD ["npm", "run", "acceptance:personal-reflection"]
+
 # Production stage
 FROM node:20-slim
 
