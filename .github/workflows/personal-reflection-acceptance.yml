@@ -1,0 +1,56 @@
+name: Personal Reflection isolated acceptance
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'docker-compose.personal-reflection-acceptance.yml'
+      - 'scripts/personal-reflection-*'
+      - 'src/config.ts'
+      - 'src/db/personal-reflection.ts'
+      - 'src/embeddings/embedder.ts'
+      - 'src/mcp/tools/personal-reflection.ts'
+      - 'src/mcp/tools/recall.ts'
+      - 'tests/personal-reflection*.test.ts'
+      - 'docs/personal-reflection-production-acceptance.md'
+      - '.github/workflows/personal-reflection-acceptance.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'docker-compose.personal-reflection-acceptance.yml'
+      - 'scripts/personal-reflection-*'
+      - 'src/config.ts'
+      - 'src/db/personal-reflection.ts'
+      - 'src/embeddings/embedder.ts'
+      - 'src/mcp/tools/personal-reflection.ts'
+      - 'src/mcp/tools/recall.ts'
+      - 'tests/personal-reflection*.test.ts'
+      - 'docs/personal-reflection-production-acceptance.md'
+      - '.github/workflows/personal-reflection-acceptance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+        env:
+          ONNXRUNTIME_NODE_INSTALL: skip
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Full test suite and isolated-runner cleanup guard
+        run: npm test
+        env:
+          HIPPO_ACCEPTANCE_TEST_DOCKER_GUARD: '1'
+      - name: Build and run production-equivalent isolated acceptance
+        run: bash scripts/run-personal-reflection-isolated-acceptance.sh

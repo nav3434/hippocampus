@@ -75,6 +75,7 @@ const configSchema = z.object({
   personalReflectionPrincipals: z.string().default('').transform((raw) =>
     raw.split(',').map((principal) => principal.trim()).filter(Boolean)
   ),
+  personalReflectionAcceptanceMode: z.enum(['isolated-v1']).optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -96,6 +97,7 @@ function loadConfig(): Config {
     contextMaxObservations: process.env.HIPPO_CONTEXT_MAX_OBSERVATIONS,
     appendOnlyPrefixes: process.env.HIPPO_APPEND_ONLY_PREFIXES,
     personalReflectionPrincipals: process.env.HIPPO_PERSONAL_REFLECTION_PRINCIPALS,
+    personalReflectionAcceptanceMode: process.env.HIPPO_PERSONAL_REFLECTION_ACCEPTANCE_MODE,
   });
 
   if (!result.success) {
@@ -107,3 +109,26 @@ function loadConfig(): Config {
 }
 
 export const config = loadConfig();
+
+export function isIsolatedPersonalReflectionAcceptanceConfigSafe(
+  mode: string | undefined,
+  dbPath: string,
+  volumeName: string,
+  buildSha: string
+): boolean {
+  if (mode !== 'isolated-v1') return true;
+  return dbPath === '/data/hippocampus.db' &&
+    /^pr-acceptance-[a-f0-9]{12}_acceptance-data$/.test(volumeName) &&
+    /^[a-f0-9]{40}$/.test(buildSha);
+}
+
+// Acceptance-only runtime instrumentation and fault injection are available
+// only in a disposable Compose project with a fresh project-scoped volume.
+// Keep the guard here, before the server opens its database or listener.
+if (config.personalReflectionAcceptanceMode === 'isolated-v1') {
+  const volumeName = process.env.HIPPO_ACCEPTANCE_VOLUME_NAME ?? '';
+  const buildSha = process.env.HIPPO_BUILD_SHA ?? '';
+  if (!isIsolatedPersonalReflectionAcceptanceConfigSafe(config.personalReflectionAcceptanceMode, config.dbPath, volumeName, buildSha)) {
+    throw new Error('Isolated Personal Reflection acceptance requires the fixed database path, fresh project volume name, and immutable build SHA.');
+  }
+}
