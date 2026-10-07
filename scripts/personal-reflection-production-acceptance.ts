@@ -347,10 +347,11 @@ async function run(): Promise<void> {
         const forgotten = await call(client, 'forget', { entity: globalEntityName });
         const deleted = forgotten.value?.deleted as Record<string, unknown> | undefined;
         const verification = await call(client, 'get_observation', { observation_id: globalObservationId });
-        if (!forgotten.ok || forgotten.value?.success !== true || deleted?.entity !== true ||
-            deleted.observations !== 1 || !verification.ok || verification.value?.success !== false) {
+        const deletionReported = forgotten.ok && forgotten.value?.success === true && deleted?.entity === true && deleted.observations === 1;
+        const observationAbsent = verification.ok && verification.value?.success === false;
+        if (!deletionReported || !observationAbsent) {
           failed = true;
-          report.cleanup.recovery.push(`Forget only synthetic entity ${globalEntityName} with the forget tool, then use get_observation on its UUID and verify success=false.`);
+          report.cleanup.recovery.push(`Synthetic cleanup diagnostics: forget_ok=${forgotten.ok}; delete_success=${forgotten.value?.success === true}; entity_deleted=${deleted?.entity === true}; observation_count=${typeof deleted?.observations === 'number' ? deleted.observations : 'unknown'}; direct_read_absent=${observationAbsent}.`);
         }
       }
       report.cleanup.status = failed ? 'failed' : 'complete';
