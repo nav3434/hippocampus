@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { derivePrincipal, requireSyntheticAcceptanceMode, validateAcceptanceTarget, type PrincipalKind } from './personal-reflection-acceptance-core.js';
+import { identityReportMetadata, requireSyntheticAcceptanceMode, validateAcceptanceTarget, type PrincipalKind } from './personal-reflection-acceptance-core.js';
 
 type Status = 'PASS' | 'FAIL' | 'BLOCKED' | 'NOT_RUN';
 type Check = { status: Status; evidence: string[] };
 type Reply = { ok: boolean; value?: Record<string, unknown>; error?: string };
-const report: { schema: string; target: string; authenticated_principal?: string; expected_oauth_principal?: string; principal_identity_source?: string; backend_build_identity: string; checks: Record<string, Check>; cleanup: { status: 'not-needed' | 'complete' | 'failed'; synthetic_ids: string[]; recovery: string[] } } = {
+const report: { schema: string; target: string; identity_type?: PrincipalKind; identity_source?: 'bearer-sha256-derived' | 'existing-registered-client-id'; backend_build_identity: string; checks: Record<string, Check>; cleanup: { status: 'not-needed' | 'complete' | 'failed'; synthetic_ids: string[]; recovery: string[] } } = {
   schema: 'hippocampus-personal-reflection-acceptance/v1', target: '',
   backend_build_identity: 'unavailable: scope status does not expose a backend build identifier',
   checks: {
@@ -54,14 +54,9 @@ async function run(): Promise<void> {
     report.target = target.origin;
     const token = process.env.HIPPO_ACCEPTANCE_BEARER_TOKEN!;
     const kind = process.env.HIPPO_ACCEPTANCE_AUTH_KIND as PrincipalKind;
-    const principal = derivePrincipal(kind, token, process.env.HIPPO_ACCEPTANCE_OAUTH_CLIENT_ID);
-    if (kind === 'oauth') {
-      report.expected_oauth_principal = principal;
-      report.principal_identity_source = 'expected value from the existing registered service client_id; server binds token to its stored client_id';
-    } else {
-      report.authenticated_principal = principal;
-      report.principal_identity_source = 'sha256 of the exact supplied bearer token';
-    }
+    // The machine report records only the identity type/source, never a
+    // stable bearer-derived identifier or OAuth client ID.
+    Object.assign(report, identityReportMetadata(kind));
     const transport = new StreamableHTTPClientTransport(target, { requestInit: { headers: { Authorization: `Bearer ${token}` } } });
     client = new Client({ name: 'hippocampus-personal-reflection-acceptance', version: '1.0.0' });
     await client.connect(transport);

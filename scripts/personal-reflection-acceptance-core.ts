@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 
 export type PrincipalKind = 'agent' | 'legacy' | 'oauth';
+export type IdentityReportMetadata = { identity_type: PrincipalKind; identity_source: 'bearer-sha256-derived' | 'existing-registered-client-id' };
+
+export function identityReportMetadata(kind: PrincipalKind): IdentityReportMetadata {
+  return { identity_type: kind, identity_source: kind === 'oauth' ? 'existing-registered-client-id' : 'bearer-sha256-derived' };
+}
 
 export function derivePrincipal(kind: PrincipalKind, bearerToken: string, oauthClientId?: string): string {
   if (!bearerToken) throw new Error('bearer token is required');

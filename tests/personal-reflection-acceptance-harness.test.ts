@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { derivePrincipal, requireSyntheticAcceptanceMode, validateAcceptanceTarget } from '../scripts/personal-reflection-acceptance-core.js';
+import { derivePrincipal, identityReportMetadata, requireSyntheticAcceptanceMode, validateAcceptanceTarget } from '../scripts/personal-reflection-acceptance-core.js';
 
 test('principal derivation matches the production auth identity rules without returning the bearer', () => {
   const token = 'synthetic-only acceptance token';
@@ -9,6 +9,9 @@ test('principal derivation matches the production auth identity rules without re
   assert.equal(derivePrincipal('agent', token), `agent:${hash}`);
   assert.equal(derivePrincipal('legacy', token), `legacy:${hash}`);
   assert.equal(derivePrincipal('oauth', token, 'registered-client'), 'oauth:registered-client');
+  assert.deepEqual(identityReportMetadata('agent'), { identity_type: 'agent', identity_source: 'bearer-sha256-derived' });
+  assert.deepEqual(identityReportMetadata('legacy'), { identity_type: 'legacy', identity_source: 'bearer-sha256-derived' });
+  assert.deepEqual(identityReportMetadata('oauth'), { identity_type: 'oauth', identity_source: 'existing-registered-client-id' });
   assert.throws(() => derivePrincipal('oauth', token), /OAuth client ID/);
 });
 

@@ -2,6 +2,8 @@
 
 This runner sends MCP calls to an explicitly selected deployment and uses only fresh synthetic UUIDs and marker text. It fails closed unless the caller supplies the exact synthetic mode, an HTTPS target (loopback HTTP is permitted for a disposable local server), and a bearer token. It never prints a bearer token or stores the synthetic statement in its report. The runner always attempts exact deletion and read-back for the UUID it created; on cleanup failure its JSON report contains only that UUID and the version needed for recovery.
 
+**Merging this PR does not constitute production acceptance of scoped retrieval.** The harness covers only B, E, and part of F. A, C, D, and the remaining F checks stay BLOCKED until a separate controlled step resolves their documented evidence or safety requirements. `/v1/retrieval/export` remains disabled. The absence of GitHub status checks is not a CI pass.
+
 Run from a reviewed checkout after installing the repository's locked dependencies:
 
 ```powershell
@@ -11,18 +13,15 @@ $env:HIPPO_ACCEPTANCE_AUTH_KIND = 'agent' # agent, legacy, or oauth
 $secret = Read-Host 'Approved Hippocampus bearer token' -AsSecureString
 $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
 try { $env:HIPPO_ACCEPTANCE_BEARER_TOKEN = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
-# For OAuth only, use the client ID of the already registered production MCP service:
-# $env:HIPPO_ACCEPTANCE_OAUTH_CLIENT_ID = '<registered-client-id>'
 npm run acceptance:personal-reflection
 Remove-Item Env:HIPPO_ACCEPTANCE_BEARER_TOKEN
-Remove-Item Env:HIPPO_ACCEPTANCE_OAUTH_CLIENT_ID -ErrorAction SilentlyContinue
 ```
 
 The JSON output has a PASS/FAIL/BLOCKED/NOT_RUN result for each contract group A-F. A nonzero exit code means at least one group failed, is blocked, or synthetic cleanup failed. Do not treat BLOCKED as acceptance or use `/v1/retrieval/export` as a workaround.
 
 ## Authentication identity
 
-The server assigns `oauth:<stored client_id>` to a valid OAuth access token. A valid configured agent bearer receives `agent:<lowercase SHA-256 hex of the exact bearer>`. In legacy single-token mode, `HIPPO_TOKEN` receives `legacy:<lowercase SHA-256 hex of that token>`. The MCP session is bound to the principal that initialized it; subsequent requests with a different authenticated principal are rejected. For agent and legacy tokens, the runner hashes the exact supplied bearer locally and never prints it. For OAuth, set the existing registered production service's client ID from its MCP client registration/configuration; the token itself does not reveal that ID to this runner. Verify that ID against the server-side OAuth registration before any separately reviewed allowlist change. If that identity cannot be verified, do not allowlist it. Never paste the raw bearer into the allowlist.
+The server assigns `oauth:<stored client_id>` to a valid OAuth access token. A valid configured agent bearer receives `agent:<lowercase SHA-256 hex of the exact bearer>`. In legacy single-token mode, `HIPPO_TOKEN` receives `legacy:<lowercase SHA-256 hex of that token>`. The MCP session is bound to the principal that initialized it; subsequent requests with a different authenticated principal are rejected. The runner report contains only `identity_type` and `identity_source`; it does not calculate or emit the full derived principal, raw bearer, or OAuth client ID. To configure an allowlist in a separately reviewed change, use the exact principal from the existing service identity: verify the registered OAuth client ID server-side, or compute `agent:`/`legacy:` plus SHA-256 of the exact configured token in a trusted local process without printing the token. If the OAuth identity cannot be verified, do not allowlist it. Never paste the raw bearer into the allowlist.
 
 The supplied deployment state has `HIPPO_PERSONAL_REFLECTION_PRINCIPALS` empty/unset, so scoped calls should be denied. A positive run requires a separately reviewed deployment change to allowlist the exact existing service identity; this PR and runner do not change compose, secrets, or production configuration. `docker-compose.yml` currently does not pass that variable to the container.
 
