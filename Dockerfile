@@ -37,7 +37,7 @@ COPY scripts/personal-reflection-acceptance-core.ts ./scripts/personal-reflectio
 CMD ["npm", "run", "acceptance:personal-reflection"]
 
 # Production stage
-FROM node:20-slim
+FROM node:20-slim AS production
 
 WORKDIR /app
 
@@ -70,3 +70,17 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
 CMD ["node", "dist/index.js"]
+
+# Same production backend image/source, with only immutable source identity
+# metadata for the isolated acceptance report. Runtime hooks remain disabled
+# unless the isolated Compose file sets its guarded mode explicitly.
+FROM production AS personal-reflection-acceptance-backend
+ARG HIPPO_BUILD_SHA
+ENV HIPPO_BUILD_SHA=${HIPPO_BUILD_SHA}
+ENV TRANSFORMERS_CACHE=/opt/transformers-cache
+USER root
+RUN mkdir -p /opt/transformers-cache && chown hippo:hippo /opt/transformers-cache
+USER hippo
+# Warm the exact production model into the acceptance image so a fresh isolated
+# data volume needs no model download and remains dedicated to synthetic data.
+RUN node --input-type=module -e "import { pipeline } from '@huggingface/transformers'; await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { dtype: 'q8', cache_dir: process.env.TRANSFORMERS_CACHE });"

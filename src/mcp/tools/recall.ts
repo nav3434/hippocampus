@@ -148,7 +148,10 @@ function describeEmbeddingFailure(err: unknown): string {
 const DEGRADED_NOTICE_WIRE = '#DEGRADED semantic search unavailable — keyword-only results, may be incomplete';
 const DEGRADED_NOTICE_COMPACT = '**DEGRADED** — semantic search unavailable; these are keyword-only matches and may be incomplete.';
 
-export async function recall(input: RecallInput): Promise<RecallResult | RecallCompactResult | RecallIndexResult> {
+export async function recall(
+  input: RecallInput,
+  onPreRankCandidates?: (observationIds: readonly string[]) => void
+): Promise<RecallResult | RecallCompactResult | RecallIndexResult> {
   // Normalize once, here, and feed both search paths from the same variable:
   // the semantic and keyword halves compare `created_at >= ?` independently, so
   // a bound normalized in only one of them would return half an answer. Throws
@@ -188,7 +191,7 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
     // under a flag is the same fail-toward-fewer-results this entry exists to
     // remove. No recoverable answer, so: loud.
     queryVector = await generateEmbedding(input.query);
-    semanticResults = semanticSearchWithVector(queryVector, searchOpts);
+    semanticResults = semanticSearchWithVector(queryVector, searchOpts, onPreRankCandidates);
   } else {
     // Semantic search is the PRIMARY leg here; keyword LIKE is the fallback. A
     // swallowed failure therefore returns a real but badly incomplete answer
@@ -209,7 +212,7 @@ export async function recall(input: RecallInput): Promise<RecallResult | RecallC
     // something precise: everything that reaches `degradedReason` is an
     // embedding-side failure, which is exactly what `degraded` claims.
     try {
-      semanticResults = await semanticSearch(input.query, searchOpts);
+      semanticResults = await semanticSearch(input.query, searchOpts, onPreRankCandidates);
     } catch (err) {
       if ((err as Error | undefined)?.name === SINCE_CONTRACT_ERROR) throw err;
       semanticResults = [];

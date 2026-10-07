@@ -215,15 +215,17 @@ export interface SemanticSearchOptions {
 
 export async function semanticSearch(
   query: string,
-  options?: SemanticSearchOptions
+  options?: SemanticSearchOptions,
+  onPreRankCandidates?: (observationIds: readonly string[]) => void
 ): Promise<SemanticSearchResult[]> {
   const queryVector = await generateEmbedding(query);
-  return semanticSearchWithVector(queryVector, options);
+  return semanticSearchWithVector(queryVector, options, onPreRankCandidates);
 }
 
 export function semanticSearchWithVector(
   queryVector: Float32Array,
-  options?: SemanticSearchOptions
+  options?: SemanticSearchOptions,
+  onPreRankCandidates?: (observationIds: readonly string[]) => void
 ): SemanticSearchResult[] {
   assertStoredSinceBound(options?.since, 'semanticSearchWithVector');
 
@@ -276,6 +278,11 @@ export function semanticSearchWithVector(
     entity_name: string;
     entity_type: string | null;
   }>;
+
+  // Acceptance-only callers receive opaque identities at the exact boundary
+  // between SQL candidate selection and cosine/ranking/limit. Normal recall
+  // never supplies this callback and its result contract is unchanged.
+  onPreRankCandidates?.(rows.map((row) => row.observation_id));
 
   const scored = rows.map(row => {
     const storedVector = new Float32Array(

@@ -1,0 +1,56 @@
+services:
+  hippocampus-acceptance:
+    build:
+      context: .
+      target: personal-reflection-acceptance-backend
+      args:
+        HIPPO_BUILD_SHA: ${HIPPO_ACCEPTANCE_BUILD_SHA:?set by isolated acceptance runner}
+    image: hippocampus-personal-reflection-acceptance-backend:${HIPPO_ACCEPTANCE_BUILD_SHA:?}
+    restart: "no"
+    ports:
+      - "127.0.0.1:${HIPPO_ACCEPTANCE_LOOPBACK_PORT:?set by isolated acceptance runner}:3000"
+    environment:
+      HIPPO_PASSPHRASE: synthetic-isolated-acceptance-passphrase-only
+      HIPPO_DB_PATH: /data/hippocampus.db
+      HIPPO_TOKEN: ${HIPPO_ACCEPTANCE_SYNTHETIC_TOKEN:?set by isolated acceptance runner}
+      HIPPO_PERSONAL_REFLECTION_PRINCIPALS: ${HIPPO_ACCEPTANCE_SYNTHETIC_PRINCIPAL:?set by isolated acceptance runner}
+      HIPPO_PERSONAL_REFLECTION_ACCEPTANCE_MODE: isolated-v1
+      HIPPO_ACCEPTANCE_VOLUME_NAME: ${HIPPO_ACCEPTANCE_VOLUME_NAME:?set by isolated acceptance runner}
+      PORT: "3000"
+      HOST: 0.0.0.0
+    volumes:
+      - acceptance-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64M
+
+  acceptance-runner:
+    build:
+      context: .
+      target: personal-reflection-acceptance
+    image: hippocampus-personal-reflection-acceptance-runner:${HIPPO_ACCEPTANCE_BUILD_SHA:?}
+    restart: "no"
+    depends_on:
+      hippocampus-acceptance:
+        condition: service_healthy
+    environment:
+      HIPPO_ACCEPTANCE_MODE: synthetic-only
+      HIPPO_ACCEPTANCE_EXECUTION_MODE: isolated-production-equivalent
+      HIPPO_ACCEPTANCE_TARGET_URL: http://hippocampus-acceptance:3000/mcp
+      HIPPO_ACCEPTANCE_AUTH_KIND: legacy
+      HIPPO_ACCEPTANCE_BEARER_TOKEN: ${HIPPO_ACCEPTANCE_SYNTHETIC_TOKEN:?set by isolated acceptance runner}
+      HIPPO_ACCEPTANCE_VOLUME_NAME: ${HIPPO_ACCEPTANCE_VOLUME_NAME:?set by isolated acceptance runner}
+      HIPPO_ACCEPTANCE_BUILD_SHA: ${HIPPO_ACCEPTANCE_BUILD_SHA:?set by isolated acceptance runner}
+
+volumes:
+  acceptance-data:
+    name: ${HIPPO_ACCEPTANCE_VOLUME_NAME:?set by isolated acceptance runner}

@@ -103,14 +103,18 @@ describe('Personal Reflection scoped retrieval contract v1.0', () => {
     db.prepare('INSERT INTO embeddings(id, entity_id, observation_id, vector, text_content) VALUES (?, ?, ?, ?, ?)')
       .run(randomUUID(), entityId, observationId, Buffer.from(vector(0).buffer), 'synthetic global candidate');
 
-    const recall = pr.personalReflectionRecall(PRINCIPAL, 'personal-reflection', vector(0), 1, 'personal-reflection', 'private');
+    let scopedCandidates: readonly string[] = [];
+    const recall = pr.personalReflectionRecall(PRINCIPAL, 'personal-reflection', vector(0), 1, 'personal-reflection', 'private', (ids) => { scopedCandidates = ids; });
+    assert.deepEqual(scopedCandidates, [id], 'acceptance trace callback observes only scoped SQL candidates before ranking');
     assert.deepEqual(recall.matches, [{ canonical_id: id, canonical_version: 1 }]);
     assert.deepEqual(Object.keys(recall.matches[0]).sort(), ['canonical_id', 'canonical_version']);
     const genericMatch = db.prepare('SELECT observation_id FROM embeddings WHERE observation_id = ?').get(observationId);
     const scopedInGeneric = db.prepare('SELECT observation_id FROM embeddings WHERE text_content = ?').get(scoped.content);
     assert.ok(genericMatch);
     assert.equal(scopedInGeneric, undefined);
-    assert.deepEqual(semanticSearchWithVector(vector(0), { limit: 1 }).map((row) => row.observation_id), [observationId]);
+    let legacyCandidates: readonly string[] = [];
+    assert.deepEqual(semanticSearchWithVector(vector(0), { limit: 1 }, (ids) => { legacyCandidates = ids; }).map((row) => row.observation_id), [observationId]);
+    assert.deepEqual(legacyCandidates, [observationId], 'legacy trace callback observes its SQL candidate set before cosine ranking');
     assertCode('invalid_scope', () => pr.personalReflectionRecall(PRINCIPAL, 'global', vector(0), 1, 'personal-reflection', 'private'));
   });
 

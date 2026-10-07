@@ -434,7 +434,8 @@ export function personalReflectionRecall(
   queryVector: Float32Array,
   limit: number,
   consumer: string,
-  sensitivity: string
+  sensitivity: string,
+  onPreRankCandidates?: (canonicalIds: readonly string[]) => void
 ): { scope: typeof PERSONAL_REFLECTION_SCOPE; degraded: false; matches: Array<{ canonical_id: string; canonical_version: number }> } {
   // All caller and principal capabilities are checked before selecting rows or
   // invoking cosine ranking. `consumer` is only a requested capability; the
@@ -461,6 +462,11 @@ export function personalReflectionRecall(
     .all(PERSONAL_REFLECTION_SCOPE, generation, 'private') as Array<{
       canonical_id: string; canonical_version: number; vector: Buffer;
     }>;
+
+  // Acceptance instrumentation observes opaque IDs before vector validation,
+  // cosine scoring, sorting, or truncation. Normal callers omit the callback.
+  onPreRankCandidates?.(candidates.map((row) => row.canonical_id));
+
   const ranked = candidates.map((row) => {
     if (row.vector.byteLength !== EMBEDDING_DIM * Float32Array.BYTES_PER_ELEMENT) {
       throw new PersonalReflectionError('unavailable');
