@@ -22,7 +22,7 @@ The JSON output has a PASS/FAIL/BLOCKED/NOT_RUN result for each contract group A
 
 ## Isolated production-equivalent acceptance
 
-The isolated runner builds the production backend source into a separate acceptance backend image, creates a random Compose project and previously nonexistent project-scoped volume, exposes only a random loopback port, then destroys the project and volume on every exit path. It refuses a dirty checkout or an existing volume. The backend's acceptance instrumentation refuses startup unless the target database path, project-volume name, and immutable build SHA match the isolated guard. The production Compose file and production runtime image do not enable or register trace/fault tools.
+The isolated runner builds the production backend source into a separate acceptance backend image and warms the exact production embedding model into that image. It creates a random Compose project and previously nonexistent project-scoped data volume, exposes only a random loopback port, then destroys the project and volume on every exit path. It refuses a dirty checkout or an existing volume. The backend's acceptance instrumentation refuses startup unless the target database path, project-volume name, and immutable build SHA match the isolated guard. The production Compose file and production runtime image do not enable or register trace/fault tools.
 
 Run from a clean, committed checkout on a host with Docker Compose v2 and Bash. This needs Docker on the host, not Node.js or npm:
 

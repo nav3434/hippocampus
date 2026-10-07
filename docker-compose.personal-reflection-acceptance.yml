@@ -18,7 +18,6 @@ services:
       HIPPO_ACCEPTANCE_VOLUME_NAME: ${HIPPO_ACCEPTANCE_VOLUME_NAME:?set by isolated acceptance runner}
       PORT: "3000"
       HOST: 0.0.0.0
-      TRANSFORMERS_CACHE: /data/.models
     volumes:
       - acceptance-data:/data
     healthcheck:
