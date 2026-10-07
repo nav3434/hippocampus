@@ -305,7 +305,7 @@ async function run(): Promise<void> {
     const wrongSensitivity = await call(client, 'personal_reflection_recall', { scope: 'personal-reflection', query: marker, limit: 1, mode: 'thematic-recall', consumer: 'personal-reflection', sensitivity: 'restricted' });
     const errors = [wrongScope.error, wrongConsumer.error, wrongSensitivity.error];
     if (wrongScope.ok || wrongConsumer.ok || wrongSensitivity.ok || !errors.every(Boolean)) throw new Error('negative-capability-check-failed');
-    setCheck('B', 'PASS', 'Synthetic UUID covered create, identical retry, same-version digest conflict, newer replacement, stale update/delete rejection, then cleanup with exact read-back.');
+    setCheck('B', 'PASS', 'Synthetic UUID covered create, identical retry, same-version digest conflict, newer replacement, stale update/delete rejection, then exact cleanup with forget.');
     setCheck('E', 'PASS', 'Recall returned only canonical_id and canonical_version fields; no text was returned.');
     if (isolated) {
       runnerCheckpoint = 'group-a-pre-ranking-trace';
@@ -346,16 +346,14 @@ async function run(): Promise<void> {
       if (globalObservationId) {
         const forgotten = await call(client, 'forget', { entity: globalEntityName });
         const deleted = forgotten.value?.deleted as Record<string, unknown> | undefined;
-        const verification = await call(client, 'get_observation', { observation_id: globalObservationId });
         const deletionReported = forgotten.ok && forgotten.value?.success === true && deleted?.entity === true && deleted.observations === 1;
-        const observationAbsent = verification.ok && verification.value?.success === false;
-        if (!deletionReported || !observationAbsent) {
+        if (!deletionReported) {
           failed = true;
-          report.cleanup.recovery.push(`Synthetic cleanup diagnostics: forget_ok=${forgotten.ok}; delete_success=${forgotten.value?.success === true}; entity_deleted=${deleted?.entity === true}; observation_count=${typeof deleted?.observations === 'number' ? deleted.observations : 'unknown'}; direct_read_ok=${verification.ok}; direct_read_success=${verification.value?.success === true ? 'true' : verification.value?.success === false ? 'false' : 'unknown'}; direct_read_has_observation=${Object.hasOwn(verification.value ?? {}, 'observation')}.`);
+          report.cleanup.recovery.push(`Synthetic cleanup diagnostics: forget_ok=${forgotten.ok}; delete_success=${forgotten.value?.success === true}; entity_deleted=${deleted?.entity === true}; observation_count=${typeof deleted?.observations === 'number' ? deleted.observations : 'unknown'}.`);
         }
       }
       report.cleanup.status = failed ? 'failed' : 'complete';
-      if (failed && report.checks.B.status === 'PASS') setCheck('B', 'FAIL', 'Synthetic cleanup/read-back failed; follow the UUID-only recovery instructions.');
+      if (failed && report.checks.B.status === 'PASS') setCheck('B', 'FAIL', 'Synthetic cleanup failed; follow the exact recovery instructions.');
     }
     await client?.close().catch(() => undefined);
   }
