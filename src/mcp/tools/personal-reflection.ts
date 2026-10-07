@@ -26,6 +26,11 @@ function result(value: unknown) {
 
 function failure(error: unknown) {
   // Do not include input, content, SQL details, or model errors in MCP responses.
+  if (acceptanceModeEnabled() && error instanceof Error) {
+    // Isolated fault diagnosis is class-only; message and stack may contain
+    // query, content, filesystem, or backend details and are never logged.
+    console.error(`Personal Reflection acceptance failure class: ${error.name || 'Error'}`);
+  }
   const code = error instanceof PersonalReflectionError ? error.code : 'unavailable';
   return { content: [{ type: 'text' as const, text: JSON.stringify({ error: code }) }], isError: true };
 }
