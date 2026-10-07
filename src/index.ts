@@ -27,6 +27,10 @@ const sessions = new SessionRegistry<WebStandardStreamableHTTPServerTransport>({
   idleMs: SESSION_IDLE_MS,
   maxSessions: MAX_SESSIONS,
 });
+// MCP handlers are bound to the identity authenticated during session setup.
+// Reusing a session with another valid bearer credential is rejected rather
+// than inheriting the first caller's scoped capabilities.
+const sessionPrincipals = new WeakMap<WebStandardStreamableHTTPServerTransport, string>();
 
 // CORS for AI platform origins
 app.use(
@@ -89,12 +93,17 @@ sessionSweep.unref();
 
 app.all('/mcp', async (c) => {
   const sessionId = c.req.header('mcp-session-id');
+  const authenticatedPrincipal = c.get('authenticatedPrincipal');
 
   // Existing session: reuse its transport, stamp it active + in-flight so the
   // sweep and LRU backstop can't evict it mid-request.
   if (sessionId) {
-    const transport = sessions.touch(sessionId);
-    if (transport) {
+    const candidate = sessions.peek(sessionId);
+    if (candidate) {
+      if (sessionPrincipals.get(candidate) !== authenticatedPrincipal) {
+        return c.json({ error: 'unauthorized', error_description: 'MCP session identity mismatch' }, 401);
+      }
+      const transport = sessions.touch(sessionId)!;
       sessions.setInFlight(sessionId, 1);
       try {
         return await transport.handleRequest(c.req.raw);
@@ -114,7 +123,7 @@ app.all('/mcp', async (c) => {
   }
 
   // New session (or initialization): create a transport + server.
-  const mcpServer = createMcpServer();
+  const mcpServer = createMcpServer(authenticatedPrincipal);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
     enableJsonResponse: true,
@@ -125,10 +134,13 @@ app.all('/mcp', async (c) => {
       sessions.close(closedSessionId);
     },
   });
+  sessionPrincipals.set(transport, authenticatedPrincipal);
   // Any close path (client DELETE, error, our idle sweep) drops the map entry
   // so the session/server island can be garbage-collected.
   transport.onclose = () => {
-    if (transport.sessionId) sessions.drop(transport.sessionId);
+    if (transport.sessionId) {
+      sessions.drop(transport.sessionId);
+    }
   };
 
   await mcpServer.connect(transport);

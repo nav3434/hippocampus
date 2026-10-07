@@ -14,6 +14,12 @@ const ACCESS_TOKEN_TTL = 60 * 60 * 1000; // 1 hour
 const REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days
 const AUTH_CODE_TTL = 5 * 60 * 1000; // 5 minutes
 
+declare module 'hono' {
+  interface ContextVariableMap {
+    authenticatedPrincipal: string;
+  }
+}
+
 function sha256(input: string): string {
   return createHash('sha256').update(input).digest('base64url');
 }
@@ -256,6 +262,11 @@ function matchesAgentToken(candidate: string): boolean {
   return false;
 }
 
+function principalForToken(kind: 'legacy' | 'agent', token: string): string {
+  // Keep the raw bearer secret out of request/session metadata and logs.
+  return `${kind}:${createHash('sha256').update(token).digest('hex')}`;
+}
+
 // Bearer token verification middleware.
 //
 // Accepts either:
@@ -279,6 +290,12 @@ export function bearerAuth() {
         if (!auth || auth !== `Bearer ${config.token}`) {
           return c.json({ error: 'unauthorized', error_description: 'Invalid or missing token' }, 401);
         }
+        c.set('authenticatedPrincipal', principalForToken('legacy', config.token));
+      } else {
+        // Legacy unauthenticated mode remains available for installations that
+        // deliberately have no bearer token. It is never Personal Reflection
+        // capable unless an operator explicitly allowlists this exact identity.
+        c.set('authenticatedPrincipal', 'anonymous');
       }
       return next();
     }
@@ -299,11 +316,13 @@ export function bearerAuth() {
         c.header('WWW-Authenticate', 'Bearer error="invalid_token"');
         return c.json({ error: 'invalid_token', error_description: 'Token expired' }, 401);
       }
+      c.set('authenticatedPrincipal', `oauth:${stored.client_id}`);
       return next();
     }
 
     // Fall back to agent token (machine-to-machine path)
     if (matchesAgentToken(token)) {
+      c.set('authenticatedPrincipal', principalForToken('agent', token));
       return next();
     }
 

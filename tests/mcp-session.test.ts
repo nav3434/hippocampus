@@ -9,8 +9,10 @@ const DB_PATH = join(tmpdir(), `hippo-test-mcp-session-${Date.now()}.db`);
 // bearerAuth falls through to the agent-token path, same as auth.test.ts.
 process.env.HIPPO_PASSPHRASE = 'test-passphrase-for-mcp-session';
 process.env.HIPPO_DB_PATH = DB_PATH;
+process.env.HIPPO_OAUTH_ISSUER = 'https://test.local';
 const AGENT_TOKEN = 'a'.repeat(64);
-process.env.HIPPO_AGENT_TOKEN = AGENT_TOKEN;
+const OTHER_AGENT_TOKEN = 'b'.repeat(64);
+process.env.HIPPO_AGENT_TOKEN = `${AGENT_TOKEN},${OTHER_AGENT_TOKEN}`;
 
 // bearerAuth checks the OAuth access-token store before the agent token, so
 // the DB must be initialized before any /mcp request.
@@ -27,9 +29,9 @@ after(() => {
 
 // Headers the Streamable HTTP transport requires on POST, plus bearer auth
 // for the /mcp middleware chain (rate limit + bearerAuth run before the route).
-function mcpHeaders(sessionId?: string): Record<string, string> {
+function mcpHeaders(sessionId?: string, token = AGENT_TOKEN): Record<string, string> {
   const headers: Record<string, string> = {
-    authorization: `Bearer ${AGENT_TOKEN}`,
+    authorization: `Bearer ${token}`,
     'content-type': 'application/json',
     accept: 'application/json, text/event-stream',
   };
@@ -75,6 +77,13 @@ describe('/mcp stale session handling', () => {
     // session id on initialize.
     const newSessionId = res.headers.get('mcp-session-id');
     assert.ok(newSessionId, 'initialize response should carry mcp-session-id');
+
+    const identitySwap = await app.request('/mcp', {
+      method: 'POST',
+      headers: mcpHeaders(newSessionId!, OTHER_AGENT_TOKEN),
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+    assert.equal(identitySwap.status, 401, 'a live MCP session must remain bound to its authenticated principal');
 
     // Companion check: the id we just got back is a KNOWN session, so reusing
     // it must not hit the 404 branch either.
