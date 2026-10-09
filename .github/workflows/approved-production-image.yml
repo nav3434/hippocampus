@@ -1,0 +1,129 @@
+name: Approved Hippocampus production image
+
+# Review builds run only on GitHub-hosted runners. Publication is an explicit
+# manual operation from main; neither job accesses or deploys the VPS.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/approved-production-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: 4bfc4cfa3c1d8e275e027896086ce924cfad8358
+  IMAGE: ghcr.io/nav3434/hippocampus
+  RELEASE_TAG: accepted-4bfc4cfa3c1d8e275e027896086ce924cfad8358
+
+concurrency:
+  group: hippocampus-approved-image-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  review-build:
+    name: Build approved source without publishing
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact approved backend source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Verify approved source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build production target; never push during PR review
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: hippocampus-reviewed:local
+          labels: |
+            org.opencontainers.image.source=https://github.com/nav3434/hippocampus
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+      - name: Verify image revision label
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(docker image inspect hippocampus-reviewed:local --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          test "$actual" = "$SOURCE_SHA"
+          printf 'Approved source=%s; production image label PASS; no image published or deployed.\n' "$SOURCE_SHA"
+
+  publish:
+    name: Publish accepted source to GHCR (manual only)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out exact approved backend source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Verify approved source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Authenticate for registry publication only
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build production target and publish source-pinned tag
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.RELEASE_TAG }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/nav3434/hippocampus
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+          provenance: mode=max
+      - name: Verify published digest and source label; report immutable reference
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$DIGEST"
+          [[ "$DIGEST" == sha256:* ]]
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" >/dev/null
+          docker pull --platform linux/amd64 "$IMAGE@$DIGEST"
+          actual="$(docker image inspect "$IMAGE@$DIGEST" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          test "$actual" = "$SOURCE_SHA"
+          size_bytes="$(docker image inspect "$IMAGE@$DIGEST" --format '{{.Size}}')"
+          {
+            echo '## Approved production image: registry verification PASS'
+            echo "- Approved backend source: \`$SOURCE_SHA\`"
+            echo "- Immutable image reference: \`$IMAGE@$DIGEST\`"
+            echo "- Uncompressed local image size (bytes): \`$size_bytes\`"
+            echo '- Deployment status: **not deployed**; VPS unchanged'
+            echo '- Use the digest rather than the mutable release tag for any future, separately authorized deployment.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf 'VERIFIED IMAGE REF: %s@%s\n' "$IMAGE" "$DIGEST"
