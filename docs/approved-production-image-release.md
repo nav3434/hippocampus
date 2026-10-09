@@ -1,7 +1,20 @@
 # Approved Hippocampus production image — source-pinned GHCR publication
 
-Status: **workflow proposed; no production deployment authorized**.
+Status: **image built and published off-VPS; authorized production cutover completed and verified on 2026-10-09**. This file also retains the runbook for future independently authorized releases.
 Backend repository: `nav3434/hippocampus`. Accepted Personal Reflection backend source: `4bfc4cfa3c1d8e275e027896086ce924cfad8358` (PR #5; accepted isolation evidence in the canonical Personal System snapshots).
+
+## Completed release / evidence — 2026-10-09
+
+- Off-VPS GHCR workflow was reviewed and merged as [PR #6](https://github.com/nav3434/hippocampus/pull/6), merge SHA `5fc66214a82f07bf1c4832762a4b4e0b5865b702`; pull-request dry-build [run #37976027834](https://github.com/nav3434/hippocampus/actions/runs/37976027834) passed.
+- Owner manually dispatched the publish workflow: [run #37976839835](https://github.com/nav3434/hippocampus/actions/runs/37976839835) finished `success`; digest readback and approved source-revision label verification passed.
+- **Published and deployed immutable reference:** `ghcr.io/nav3434/hippocampus@sha256:66651ce4c9934ce2a080b572c23ea19439a953a0666549431c738d1b6a52531c`.
+- Platform: `linux/amd64`; platform manifest `sha256:5fa62e9bb414c207e002ebb5350fa61dc9523458acc98d2f987e08958f606f4f`; host image size reported `236797119` bytes. The `org.opencontainers.image.revision` label matched accepted source `4bfc4cfa3c1d8e275e027896086ce924cfad8358`.
+- The VPS operator confirmed `HIPPOCAMPUS_CUTOVER=PASS`, new image ID, `HEALTH=healthy`, preserved `hippocampus-data` volume and `127.0.0.1:3000` binding. An isolated recovery test opened the encrypted backed-up DB, returned SQLite integrity `ok` and schema version `8`. Pre-cutover archive: `/var/backups/hippocampus/data/hippocampus-2026-10-09_19-39-21.tar.gz`.
+- Former image retained as `hippocampus:rollback-before-ghcr-20261009` (old image `sha256:55207a93fd6ceb427ea9e6aa7942f8e77ce428eb8e0f99a24d656cf9fdf4b806`); historic `hippocampus:rollback-pre-pr-scope` is separate.
+- Gateway restarted and direct local nine-tool MCP list plus `hippocampus_recall` `status=OK`, `degraded=false`, one match verified by operator. Another ChatGPT session displayed nine tools; its external recall outcome `OK`/one result was **user-reported**, not directly invoked by this document writer.
+- **Operational caveats:** VPS free space ~1.8 GB (90% used) after cutover, hence warning; independently accessible off-host Hippocampus credentials/backups and full clean-host recovery were **not verified** in this release. Separate Personal Reflection Store physical offsite media/key custody remains an open owner action.
+
+Canonical extended production documents: [Personal System — Hippocampus Runbook](https://github.com/nav3434/personal-system/blob/main/docs/technical/hippocampus-production/RUNBOOK.md), [Recovery](https://github.com/nav3434/personal-system/blob/main/docs/technical/hippocampus-production/RECOVERY.md), [Acceptance](https://github.com/nav3434/personal-system/blob/main/docs/technical/hippocampus-production/ACCEPTANCE-20261009.md).
 
 ## Purpose and constraints
 
@@ -28,11 +41,11 @@ The tag `ghcr.io/nav3434/hippocampus:accepted-4bfc4cfa3c1d8e275e027896086ce924cf
 4. Check GHCR package visibility/access. Do not change it to public as a shortcut; if private, arrange least-privilege read access during a separately approved deployment, without posting credentials to Git, chat, logs or commands.
 5. Independently verify architecture acceptance already established for the accepted source. Do not rerun acceptance groups A–F without evidence warranting it.
 
-## Separate production gate — NOT part of this workflow
+## Separate deployment gate — never implied by publication
 
-No VPS deployment is authorized by building or publishing the image.
+Building or publishing an image does **not by itself** authorize a VPS deployment. The 2026-10-09 cutover received separate owner approval and was conducted after targeted preflight, fresh backup and isolated recovery verification. Repeat the independent gate for any later release.
 
-Before a separate deployment approval:
+For each future deployment, review and confirm:
 - record current `hippocampus` container image ID and exact existing Compose/project/service configuration;
 - confirm a usable, verified backup and **independently accessible encryption/recovery credentials** under the backup owner policy;
 - preserve the running image `sha256:55207a93fd6ceb427ea9e6aa7942f8e77ce428eb8e0f99a24d656cf9fdf4b806` and named rollback tag `hippocampus:rollback-pre-pr-scope`, along with volumes and old configuration;
@@ -40,6 +53,6 @@ Before a separate deployment approval:
 - plan only the image-reference change to the exact approved `@sha256` digest, with the same persistent data volume, credentials, service environment, loopback-only port, and healthcheck;
 - have a documented reversible cutover that does not delete data or require rebuilding on the VPS.
 
-After a separately approved controlled cutover, check backend container revision label and image ID, loopback binding, health, ordinary Hippo MCP compatibility, absence of unrestricted Personal Reflection recall/export, and Gateway behavior; do not interpret a failed/degraded search as empty knowledge. Keep `/v1/retrieval/export` disabled. Only then consider deploying Gateway with its ninth `hippocampus_recall` tool, using the separate Personal System Gateway runbook and its production acceptance checks.
+After each separately approved controlled cutover, check backend container revision label and image ID, loopback binding, health, ordinary Hippo MCP compatibility, absence of unrestricted Personal Reflection recall/export, and Gateway behavior; do not interpret a failed/degraded search as empty knowledge. Keep `/v1/retrieval/export` disabled. Only then consider deploying Gateway with its ninth `hippocampus_recall` tool, using the separate Personal System Gateway runbook and its production acceptance checks.
 
 If evidence or disk headroom is insufficient, **stop before changing production**. Never run broad `docker system prune`, `docker image prune -a`, remove named rollback images, volumes, backups, or containerd files during this procedure.
