@@ -21,6 +21,8 @@
  */
 
 const TOOL_PARAMS: Record<string, Set<string>> = {
+  memory_sync_decision_inventory: new Set(['record_id', 'entity', 'source', 'type', 'kind']),
+  memory_sync_decision_append: new Set(['record_id', 'entity', 'source', 'type', 'kind', 'content', 'importance']),
   remember: new Set(['content', 'entity', 'type', 'source', 'importance', 'kind', 'replace_kind']),
   recall: new Set(['query', 'limit', 'type', 'since', 'kind', 'spread', 'format']),
   forget: new Set(['entity', 'observation_id', 'content']),
@@ -86,6 +88,8 @@ const SEMANTIC_ALIASES: Record<string, Record<string, string>> = {
 const STRICT_TOOLS = new Map<string, string>([
   ['forget', 'dropping it could change what gets deleted'],
   ['recall', 'dropping it could change what gets returned'],
+  ['memory_sync_decision_inventory', 'dropping it could change what gets stored'],
+  ['memory_sync_decision_append', 'dropping it could change what gets stored'],
   ['personal_reflection_scope_status', 'dropping it could change what gets requested'],
   ['personal_reflection_upsert', 'dropping it could change what gets stored'],
   ['personal_reflection_get', 'dropping it could change what gets read'],

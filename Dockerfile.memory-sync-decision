@@ -1,0 +1,4 @@
+FROM ghcr.io/nav3434/hippocampus@sha256:66651ce4c9934ce2a080b572c23ea19439a953a0666549431c738d1b6a52531c
+COPY --chown=hippo:hippo dist/mcp/server.js /app/dist/mcp/server.js
+COPY --chown=hippo:hippo dist/mcp/param-normalization.js /app/dist/mcp/param-normalization.js
+COPY --chown=hippo:hippo dist/mcp/tools/memory-sync-decision.js /app/dist/mcp/tools/memory-sync-decision.js

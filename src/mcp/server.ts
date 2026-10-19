@@ -1,3 +1,4 @@
+import { registerMemorySyncDecisionTools } from './tools/memory-sync-decision.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { VERSION } from '../config.js';
@@ -23,6 +24,8 @@ export function createMcpServer(principalId = 'anonymous'): McpServer {
     name: 'hippocampus',
     version: VERSION,
   });
+
+  registerMemorySyncDecisionTools(server, principalId);
 
   server.tool(
     'remember',
