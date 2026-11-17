@@ -96,3 +96,98 @@ jobs:
           (cd "$work/snapshot/$model" && sha256sum config.json tokenizer_config.json tokenizer.json onnx/model_quantized.onnx)
           docker run "${common[@]}" --network none -e OFFLINE_SNAPSHOT=1 \
             --mount "type=bind,src=$work/snapshot,dst=/snapshot,readonly" "$image" /check.mjs
+
+          # Capacity probe for the actual migration scale: 256 synthetic records,
+          # each at the 20,000-byte contract ceiling. This is intentionally above
+          # the last canonical production count (~195) without turning preflight
+          # into an unrelated 5,000-record load-test project.
+          mkdir "$work/data"
+          sudo chown 1001:1001 "$work/data"
+          cat > "$work/rebuild-capacity.mjs" <<'JS'
+          import assert from 'node:assert/strict';
+          import { createHash, randomUUID } from 'node:crypto';
+          import { readFileSync, statSync, existsSync } from 'node:fs';
+          import { env } from '/app/node_modules/@huggingface/transformers/dist/transformers.node.mjs';
+          import { initDatabase, closeDatabase } from '/app/dist/db/index.js';
+          import {
+            personalReflectionRebuildBegin,
+            personalReflectionUpsert,
+            personalReflectionRebuildActivate,
+          } from '/app/dist/db/personal-reflection.js';
+          import { generatePersonalReflectionEmbedding } from '/app/dist/embeddings/personal-reflection.js';
+
+          assert.equal(process.getuid(), 1001);
+          env.localModelPath = '/snapshot';
+          env.allowLocalModels = true;
+          env.allowRemoteModels = false;
+          env.useFSCache = false;
+          env.fetch = () => { throw new Error('Unexpected remote fetch'); };
+
+          const principal = 'preflight-capacity';
+          const scope = 'personal-reflection';
+          const count = 256;
+          const generation = randomUUID();
+          const sha256 = (s) => createHash('sha256').update(s).digest('hex');
+          const records = [];
+          for (let i = 0; i < count; i++) {
+            const suffix = String(i).padStart(10, '0');
+            const content = 'Ж'.repeat(9995) + suffix; // exactly 20,000 UTF-8 bytes
+            assert.equal(Buffer.byteLength(content, 'utf8'), 20_000);
+            records.push({
+              scope,
+              canonical_id: randomUUID(),
+              canonical_version: 1,
+              content,
+              payload_digest: sha256(content),
+            });
+          }
+          const identities = [...records]
+            .sort((a,b) => a.canonical_id.localeCompare(b.canonical_id))
+            .map(r => [r.canonical_id, r.canonical_version, r.payload_digest]);
+          const manifest = sha256(JSON.stringify(identities));
+
+          initDatabase();
+          personalReflectionRebuildBegin(principal, scope, generation, count, manifest);
+          for (const record of records) {
+            const vector = await generatePersonalReflectionEmbedding(record.content);
+            assert.equal(vector.length, 384);
+            assert.ok(vector.every(Number.isFinite));
+            const norm = Math.hypot(...vector);
+            assert.ok(Math.abs(norm - 1) < 1e-5);
+            const op = sha256(`personal-reflection:upsert:${generation}:${record.canonical_id}:${record.canonical_version}:${record.payload_digest}`);
+            personalReflectionUpsert(principal, record, op, vector, generation);
+          }
+          const activated = personalReflectionRebuildActivate(principal, scope, generation, count, manifest);
+          assert.equal(activated.active, true);
+          assert.equal(activated.record_count, count);
+
+          const files = ['/data/hippocampus.db','/data/hippocampus.db-wal','/data/hippocampus.db-shm'];
+          const sizes = Object.fromEntries(files.map(p => [p, existsSync(p) ? statSync(p).size : 0]));
+          let cgroupPeak = null;
+          for (const p of ['/sys/fs/cgroup/memory.peak','/sys/fs/cgroup/memory/memory.max_usage_in_bytes']) {
+            try { cgroupPeak = Number(readFileSync(p,'utf8').trim()); if (Number.isFinite(cgroupPeak)) break; } catch {}
+          }
+          console.log(JSON.stringify({
+            capacity_probe: 'PASS',
+            records: count,
+            bytes_per_record: 20000,
+            generation,
+            db_sizes_bytes: sizes,
+            db_total_bytes: Object.values(sizes).reduce((a,b)=>a+b,0),
+            cgroup_memory_peak_bytes: cgroupPeak,
+          }));
+          closeDatabase();
+          JS
+
+          docker run --rm --user 1001:1001 --network none --entrypoint node \
+            -e HIPPO_PASSPHRASE=capacity-test-only \
+            -e HIPPO_DB_PATH=/data/hippocampus.db \
+            -e HIPPO_PERSONAL_REFLECTION_PRINCIPALS=preflight-capacity \
+            -e TRANSFORMERS_CACHE=/cache \
+            --mount "type=bind,src=$work/rebuild-capacity.mjs,dst=/rebuild-capacity.mjs,readonly" \
+            --mount "type=bind,src=$work/snapshot,dst=/snapshot,readonly" \
+            --mount "type=bind,src=$work/data,dst=/data" \
+            "$image" /rebuild-capacity.mjs | tee "$work/capacity.log"
+
+          grep -F '"capacity_probe":"PASS"' "$work/capacity.log"
+          du -sb "$work/data"
