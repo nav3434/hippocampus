@@ -1,0 +1,38 @@
+name: Personal Reflection synthetic ranking benchmark
+
+on:
+  push:
+    branches:
+      - codex/pr-ranking-benchmark-20261117
+    paths:
+      - scripts/personal-reflection-ranking-benchmark.mjs
+      - .github/workflows/personal-reflection-ranking-benchmark.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Run benchmark
+        run: node scripts/personal-reflection-ranking-benchmark.mjs
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-reflection-ranking-benchmark
+          path: |
+            benchmark-results.json
+            benchmark-summary.md
+          if-no-files-found: error
