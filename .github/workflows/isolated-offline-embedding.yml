@@ -30,14 +30,14 @@ jobs:
           printf 'image=%s source=%s model=%s revision=%s\n' "$image" "$source" "$model" "$revision"
 
           work=$(mktemp -d)
-          trap 'sudo rm -rf -- "$work"' EXIT
+          trap 'sudo rm -rf -- "${work:?}"' EXIT
           mkdir "$work/cache" "$work/snapshot"
           sudo chown 1001:1001 "$work/cache"
           cat > "$work/check.mjs" <<'JS'
           import assert from 'node:assert/strict';
           import { readFileSync } from 'node:fs';
           import { createRequire } from 'node:module';
-          import { pathToFileURL } from 'node:url';
+          import { env } from '/app/node_modules/@huggingface/transformers/dist/transformers.node.mjs';
           import { generatePersonalReflectionEmbedding } from '/app/dist/embeddings/personal-reflection.js';
 
           assert.equal(process.getuid(), 1001);
@@ -45,7 +45,6 @@ jobs:
           assert.equal(process.arch, 'x64');
           assert.equal(process.versions.node.split('.')[0], '20');
           const require = createRequire('/app/package.json');
-          const { env } = await import(pathToFileURL(require.resolve('@huggingface/transformers')));
           const transformer = 'node_modules/@huggingface/transformers';
           const version = (path) => JSON.parse(readFileSync('/app/' + path + '/package.json', 'utf8')).version;
           const transformers = version(transformer);
