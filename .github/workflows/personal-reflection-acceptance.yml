@@ -54,3 +54,35 @@ jobs:
           HIPPO_ACCEPTANCE_TEST_DOCKER_GUARD: '1'
       - name: Build and run production-equivalent isolated acceptance
         run: bash scripts/run-personal-reflection-isolated-acceptance.sh
+
+  ranking-benchmark:
+    name: Offline Russian synthetic ranking benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run synthetic q8 benchmark
+        run: node scripts/personal-reflection-ranking-benchmark.mjs
+      - name: Publish benchmark summary
+        if: always()
+        run: |
+          if [ -f benchmark-summary.md ]; then cat benchmark-summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-reflection-ranking-benchmark
+          path: |
+            benchmark-results.json
+            benchmark-summary.md
+          if-no-files-found: warn
