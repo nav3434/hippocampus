@@ -1,0 +1,99 @@
+name: Isolated Hippocampus offline embedding
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/isolated-offline-embedding.yml'
+permissions:
+  contents: read
+  packages: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reproduce and validate the pinned offline snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=ghcr.io/nav3434/hippocampus@sha256:a2360bbb201bfdbc6c9d9de3deb2b2c6d43afd2a34af54b99189343cda31bbd5
+          source=43871992d73f5935a5066c863c476e0634bcfc86
+          model=Xenova/paraphrase-multilingual-MiniLM-L12-v2
+          revision=2c4055b12046f11709e9df2c122e59ffbdc2f900
+          docker pull --platform linux/amd64 "$image"
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$source"
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = https://github.com/nav3434/hippocampus
+          printf 'image=%s source=%s model=%s revision=%s\n' "$image" "$source" "$model" "$revision"
+
+          work=$(mktemp -d)
+          trap 'sudo rm -rf -- "$work"' EXIT
+          mkdir "$work/cache" "$work/snapshot"
+          sudo chown 1001:1001 "$work/cache"
+          cat > "$work/check.mjs" <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { createRequire } from 'node:module';
+          import { pathToFileURL } from 'node:url';
+          import { generatePersonalReflectionEmbedding } from '/app/dist/embeddings/personal-reflection.js';
+
+          assert.equal(process.getuid(), 1001);
+          assert.equal(process.platform, 'linux');
+          assert.equal(process.arch, 'x64');
+          assert.equal(process.versions.node.split('.')[0], '20');
+          const require = createRequire('/app/package.json');
+          const { env } = await import(pathToFileURL(require.resolve('@huggingface/transformers')));
+          const transformer = 'node_modules/@huggingface/transformers';
+          const version = (path) => JSON.parse(readFileSync('/app/' + path + '/package.json', 'utf8')).version;
+          const transformers = version(transformer);
+          const tokenizers = version('node_modules/@huggingface/tokenizers');
+          const ortRequire = createRequire(require.resolve('@huggingface/transformers'));
+          const ort = ortRequire('onnxruntime-node').env.versions.node;
+          assert.equal(transformers, '4.2.0');
+          assert.equal(tokenizers, '0.1.3');
+          assert.equal(ort, '1.24.3');
+          console.log({ node: process.version, transformers, tokenizers, ort, uid: process.getuid() });
+          env.cacheDir = process.env.TRANSFORMERS_CACHE;
+          if (process.env.OFFLINE_SNAPSHOT) {
+            env.localModelPath = '/snapshot';
+            env.allowLocalModels = true;
+            env.allowRemoteModels = false;
+            env.useFSCache = false;
+            env.fetch = () => { throw new Error('Unexpected remote fetch'); };
+          }
+          const vector = await generatePersonalReflectionEmbedding('Синтетическая проверка русского текста.');
+          assert.equal(vector.length, 384);
+          assert.ok(vector.every(Number.isFinite));
+          const norm = Math.hypot(...vector);
+          assert.ok(Math.abs(norm - 1) < 1e-5);
+          console.log({ dimensions: vector.length, finite: true, norm, dtype: 'q8', pooling: 'mean', normalize: true });
+          JS
+
+          common=(--rm --user 1001:1001 --entrypoint node -e TRANSFORMERS_CACHE=/cache
+            --mount "type=bind,src=$work/check.mjs,dst=/check.mjs,readonly")
+          docker run "${common[@]}" --mount "type=bind,src=$work/cache,dst=/cache" "$image" /check.mjs
+
+          test ! -e "$work/cache/$model/tokenizer_config.json"
+          if docker run "${common[@]}" --network none \
+            --mount "type=bind,src=$work/cache,dst=/cache,readonly" "$image" /check.mjs >"$work/baseline.log" 2>&1; then
+            cat "$work/baseline.log"
+            echo 'Unexpected success with revision-only cache'
+            exit 1
+          fi
+          cat "$work/baseline.log"
+          grep -F 'main/tokenizer_config.json' "$work/baseline.log"
+          grep -F 'this.tokenizer is not a function' "$work/baseline.log"
+
+          # A local-model snapshot lets both metadata discovery and model loading
+          # see the same immutable files from the revision-qualified warm cache.
+          for file in config.json tokenizer_config.json tokenizer.json onnx/model_quantized.onnx; do
+            from="$work/cache/$model/$revision/$file"
+            test -s "$from"
+            install -D -m 0444 "$from" "$work/snapshot/$model/$file"
+          done
+          (cd "$work/snapshot/$model" && sha256sum config.json tokenizer_config.json tokenizer.json onnx/model_quantized.onnx)
+          docker run "${common[@]}" --network none -e OFFLINE_SNAPSHOT=1 \
+            --mount "type=bind,src=$work/snapshot,dst=/snapshot,readonly" "$image" /check.mjs
