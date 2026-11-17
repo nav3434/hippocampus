@@ -78,7 +78,7 @@ const queries = [
 ].map(([id,type,text,target])=>({id,type,text,target}));
 const models = [
   {key:'current', name:'Xenova/all-MiniLM-L6-v2'},
-  {key:'multilingual', name:'Xenova/paraphrase-multilingual-MiniLM-L12-v2'}
+  {key:'multilingual', name:'Xenova/paraphrase-multilingual-MiniLM-L12-v2', revision:'2c4055b12046f11709e9df2c122e59ffbdc2f900'}
 ];
 
 function dot(a,b){ let s=0; for(let i=0;i<a.length;i++) s += a[i]*b[i]; return s; }
@@ -127,7 +127,7 @@ function summarize(rows){
 
 async function runModel(spec){
   console.log(`MODEL_START ${spec.key} ${spec.name}`);
-  const extractor=await pipeline('feature-extraction',spec.name,{dtype:'q8'});
+  const extractor=await pipeline('feature-extraction',spec.name,{dtype:'q8',...(spec.revision?{revision:spec.revision}:{})});
   const corpusVectors=await embedBatches(extractor,corpus.map(x=>x.text));
   const q1=await embedBatches(extractor,queries.map(x=>x.text));
   const rows1=rankQueries(corpusVectors,q1);
