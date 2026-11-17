@@ -12,9 +12,9 @@ permissions:
   contents: read
 
 env:
-  SOURCE_SHA: 4bfc4cfa3c1d8e275e027896086ce924cfad8358
+  SOURCE_SHA: 43871992d73f5935a5066c863c476e0634bcfc86
   IMAGE: ghcr.io/nav3434/hippocampus
-  RELEASE_TAG: accepted-4bfc4cfa3c1d8e275e027896086ce924cfad8358
+  RELEASE_TAG: accepted-43871992d73f5935a5066c863c476e0634bcfc86
 
 concurrency:
   group: hippocampus-approved-image-${{ github.event_name }}-${{ github.ref }}
