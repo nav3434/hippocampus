@@ -81,6 +81,7 @@ ENV TRANSFORMERS_CACHE=/opt/transformers-cache
 USER root
 RUN mkdir -p /opt/transformers-cache && chown hippo:hippo /opt/transformers-cache
 USER hippo
-# Warm the exact production model into the acceptance image so a fresh isolated
+# Warm both runtime models into the acceptance image so a fresh isolated
 # data volume needs no model download and remains dedicated to synthetic data.
 RUN node --input-type=module -e "import { pipeline } from '@huggingface/transformers'; await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { dtype: 'q8', cache_dir: process.env.TRANSFORMERS_CACHE });"
+RUN node --input-type=module -e "import { generatePersonalReflectionEmbedding } from './dist/embeddings/personal-reflection.js'; await generatePersonalReflectionEmbedding('synthetic acceptance warmup');"

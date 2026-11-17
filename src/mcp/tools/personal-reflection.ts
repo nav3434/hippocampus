@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { generateEmbedding } from '../../embeddings/embedder.js';
+import { generatePersonalReflectionEmbedding } from '../../embeddings/personal-reflection.js';
 import { config } from '../../config.js';
 import {
   PersonalReflectionError,
@@ -67,7 +67,7 @@ export function registerPersonalReflectionTools(server: McpServer, principalId: 
         personalReflectionScopeStatus(principalId, scope);
         if (record.scope !== scope) throw new PersonalReflectionError('invalid_scope');
         validatePersonalReflectionRecord(record);
-        const vector = await generateEmbedding(record.content);
+        const vector = await generatePersonalReflectionEmbedding(record.content);
         return result(personalReflectionUpsert(principalId, record, operation_key, vector, generation));
       } catch (error) { return failure(error); }
     });
@@ -119,7 +119,7 @@ export function registerPersonalReflectionTools(server: McpServer, principalId: 
           if (fault === 'timeout') await new Promise((resolve) => setTimeout(resolve, 1_000));
           if (fault === 'backend-failure') throw new PersonalReflectionError('unavailable');
         }
-        const queryVector = await generateEmbedding(query);
+        const queryVector = await generatePersonalReflectionEmbedding(query);
         return result(personalReflectionRecall(principalId, scope, queryVector, limit, consumer, sensitivity));
       } catch (error) { return failure(error); }
     });
@@ -188,7 +188,7 @@ export function registerPersonalReflectionTools(server: McpServer, principalId: 
               ? legacy.memories.map((memory) => memory.observation_id)
               : [];
           } else {
-            const vector = await generateEmbedding(query);
+            const vector = await generatePersonalReflectionEmbedding(query);
             const scoped = personalReflectionRecall(principalId, PERSONAL_REFLECTION_SCOPE, vector, limit,
               'personal-reflection', 'private', (ids) => { candidateIds = ids; });
             returnedIds = scoped.matches.map((match) => match.canonical_id);
