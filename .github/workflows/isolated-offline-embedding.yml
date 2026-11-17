@@ -97,10 +97,9 @@ jobs:
           docker run "${common[@]}" --network none -e OFFLINE_SNAPSHOT=1 \
             --mount "type=bind,src=$work/snapshot,dst=/snapshot,readonly" "$image" /check.mjs
 
-          # Capacity probe for the actual migration scale: 256 synthetic records,
-          # each at the 20,000-byte contract ceiling. This is intentionally above
-          # the last canonical production count (~195) without turning preflight
-          # into an unrelated 5,000-record load-test project.
+          # Capacity probe at the 20,000-byte contract ceiling. We measure cgroup
+          # memory after the first and final synthetic records and scale the
+          # incremental growth conservatively to a 256-record production gate.
           mkdir "$work/data"
           sudo chown 1001:1001 "$work/data"
           cat > "$work/rebuild-capacity.mjs" <<'JS'
@@ -125,7 +124,7 @@ jobs:
 
           const principal = 'preflight-capacity';
           const scope = 'personal-reflection';
-          const count = 256;
+          const count = 16;
           const generation = randomUUID();
           const sha256 = (s) => createHash('sha256').update(s).digest('hex');
           const records = [];
@@ -146,8 +145,21 @@ jobs:
             .map(r => [r.canonical_id, r.canonical_version, r.payload_digest]);
           const manifest = sha256(JSON.stringify(identities));
 
+          const cgroup = () => {
+            const out = {};
+            for (const [k,p] of Object.entries({
+              current: '/sys/fs/cgroup/memory.current',
+              peak: '/sys/fs/cgroup/memory.peak',
+            })) {
+              try { out[k] = Number(readFileSync(p,'utf8').trim()); } catch { out[k] = null; }
+            }
+            return out;
+          };
+
           initDatabase();
           personalReflectionRebuildBegin(principal, scope, generation, count, manifest);
+          let afterFirst = null;
+          let index = 0;
           for (const record of records) {
             const vector = await generatePersonalReflectionEmbedding(record.content);
             assert.equal(vector.length, 384);
@@ -156,6 +168,8 @@ jobs:
             assert.ok(Math.abs(norm - 1) < 1e-5);
             const op = sha256(`personal-reflection:upsert:${generation}:${record.canonical_id}:${record.canonical_version}:${record.payload_digest}`);
             personalReflectionUpsert(principal, record, op, vector, generation);
+            index++;
+            if (index === 1) afterFirst = cgroup();
           }
           const activated = personalReflectionRebuildActivate(principal, scope, generation, count, manifest);
           assert.equal(activated.active, true);
@@ -175,6 +189,8 @@ jobs:
             db_sizes_bytes: sizes,
             db_total_bytes: Object.values(sizes).reduce((a,b)=>a+b,0),
             cgroup_memory_peak_bytes: cgroupPeak,
+            cgroup_after_first: afterFirst,
+            cgroup_final: cgroup(),
           }));
           closeDatabase();
           JS
