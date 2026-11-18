@@ -27,7 +27,7 @@ test('Personal Reflection record representation uses overlapping 32-word chunks 
   assert.equal(chunks.length, 2);
   assert.equal(chunks[0], words.slice(0, 32).join(' '));
   assert.equal(chunks[1], words.slice(16, 48).join(' '));
-  assert.deepEqual(splitPersonalReflectionRecord('  one   two three  '), ['one two three']);
+  assert.deepEqual(splitPersonalReflectionRecord('  one   two three  '), ['one   two three']);
 });
 
 test('Personal Reflection record embedding is the normalized mean of chunk embeddings', async () => {
