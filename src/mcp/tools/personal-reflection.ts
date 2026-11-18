@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { generatePersonalReflectionEmbedding } from '../../embeddings/personal-reflection.js';
+import { generatePersonalReflectionEmbedding, generatePersonalReflectionRecordEmbedding } from '../../embeddings/personal-reflection.js';
 import { config } from '../../config.js';
 import {
   PersonalReflectionError,
@@ -67,7 +67,7 @@ export function registerPersonalReflectionTools(server: McpServer, principalId: 
         personalReflectionScopeStatus(principalId, scope);
         if (record.scope !== scope) throw new PersonalReflectionError('invalid_scope');
         validatePersonalReflectionRecord(record);
-        const vector = await generatePersonalReflectionEmbedding(record.content);
+        const vector = await generatePersonalReflectionRecordEmbedding(record.content);
         return result(personalReflectionUpsert(principalId, record, operation_key, vector, generation));
       } catch (error) { return failure(error); }
     });
