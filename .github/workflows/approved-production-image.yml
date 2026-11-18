@@ -1,7 +1,7 @@
 name: Approved Hippocampus production image
 
 # Review builds run only on GitHub-hosted runners. Publication is an explicit
-# manual operation from main; neither job accesses or deploys the VPS.
+# manual operation from the release branch; neither job accesses or deploys the VPS.
 on:
   pull_request:
     paths:
@@ -12,9 +12,9 @@ permissions:
   contents: read
 
 env:
-  SOURCE_SHA: 43871992d73f5935a5066c863c476e0634bcfc86
+  SOURCE_SHA: a720fdfdf170b200bd2a5da714d2d21c57628daf
   IMAGE: ghcr.io/nav3434/hippocampus
-  RELEASE_TAG: accepted-43871992d73f5935a5066c863c476e0634bcfc86
+  RELEASE_TAG: accepted-a720fdfdf170b200bd2a5da714d2d21c57628daf
 
 concurrency:
   group: hippocampus-approved-image-${{ github.event_name }}-${{ github.ref }}
@@ -65,7 +65,7 @@ jobs:
 
   publish:
     name: Publish accepted source to GHCR (manual only)
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/production-image-a720fdf'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
