@@ -57,3 +57,17 @@ test('Personal Reflection record embedding is the normalized mean of chunk embed
   }
   assert.ok(maxDelta < 1e-7);
 });
+
+
+test('Personal Reflection record embedding preserves the single-vector path for short records', async () => {
+  const text = '  Короткая запись должна использовать один нормализованный вектор без чанкинга.  ';
+  const expected = await generatePersonalReflectionEmbedding(text.trim());
+  const actual = await generatePersonalReflectionRecordEmbedding(text);
+
+  assert.equal(actual.length, expected.length);
+  let maxDelta = 0;
+  for (let index = 0; index < actual.length; index += 1) {
+    maxDelta = Math.max(maxDelta, Math.abs(actual[index] - expected[index]));
+  }
+  assert.ok(maxDelta < 1e-7);
+});
